@@ -56,7 +56,7 @@ test("renders enriched collapsed tool call summaries", async ({ page }) => {
   await page.goto("/");
   await expect.poll(() => Boolean(wsRoute)).toBe(true);
 
-  const command = "npm test -- tests/toolDeltas.test.ts --long-summary-command-that-should-truncate-in-css";
+  const command = "npm test -- tests/sessionState.test.ts --long-summary-command-that-should-truncate-in-css";
   wsRoute?.send(
     JSON.stringify({
       source: "pi",
@@ -72,6 +72,7 @@ test("renders enriched collapsed tool call summaries", async ({ page }) => {
               role: "assistant",
               content: [
                 { type: "text", text: "Done" },
+                { type: "tool_call_delta", delta: { type: "input_json_delta", partial_json: "{\"command\"" } },
                 { type: "toolCall", id: "call_1", name: "bash", arguments: { command } }
               ]
             },
@@ -92,6 +93,8 @@ test("renders enriched collapsed tool call summaries", async ({ page }) => {
   await expect(summary).toContainText("bash");
   await expect(summary).toContainText(command);
   await expect(summary).toContainText("Complete");
+  await expect(page.getByText("tool_call_delta")).toHaveCount(0);
+  await expect(page.getByText("partial_json")).toHaveCount(0);
 
   const summaryText = summary.locator(".tool-summary-text");
   await expect

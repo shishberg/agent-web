@@ -1,14 +1,29 @@
-import { rawToolDeltaId } from "./toolDeltas";
-
 export type Role = "user" | "assistant" | "system";
 export type MessageStatus = "streaming" | "done";
+export type MessageToolStatus = "running" | "done" | "error";
+
+export type MessageToolPart = {
+  type: "tool";
+  key: string;
+  id?: string;
+  label: string;
+  name: string;
+  detail?: string;
+  status: MessageToolStatus;
+  statusLabel: string;
+  content: string;
+  input?: unknown;
+  output?: unknown;
+  rawInput?: unknown;
+  rawOutput?: unknown;
+};
 
 export type SessionMessage = {
   id: string;
   role: Role;
   content: string;
   thinking: string;
-  toolDeltas: string[];
+  tools: MessageToolPart[];
   status: MessageStatus;
 };
 
@@ -128,14 +143,12 @@ export function reduceSessionEvent(state: SessionState, event: PiEvent): Session
       state.activeMessageId = null;
       break;
     case "tool_execution_start":
-      state.tools.push({
-        id: toolId(event),
-        name: stringField(event.name) || stringField(event.toolName) || "tool",
-        status: "running",
-        input: event.input ?? event.args,
-        log: []
+      upsertExecutionTool(state, event, (tool) => {
+        tool.name = toolName(event) || tool.name;
+        tool.status = "running";
+        tool.input = toolInput(event);
       });
-      appendToolDeltaToActiveAssistant(state, event);
+      upsertMessageToolPart(state, event, { status: "running" });
       break;
     case "tool_execution_update":
       updateTool(state, toolId(event), (tool) => {
@@ -144,14 +157,14 @@ export function reduceSessionEvent(state: SessionState, event: PiEvent): Session
           tool.log = [partial];
         }
       });
-      appendToolDeltaToActiveAssistant(state, event);
+      upsertMessageToolPart(state, event, { status: "running" });
       break;
     case "tool_execution_end":
       updateTool(state, toolId(event), (tool) => {
-        tool.status = event.success === false || event.isError === true ? "failed" : "done";
+        tool.status = isToolError(event) ? "failed" : "done";
         tool.output = event.output ?? event.result;
       });
-      appendToolDeltaToActiveAssistant(state, event);
+      upsertMessageToolPart(state, event, { status: isToolError(event) ? "error" : "done" });
       break;
     case "queue_update":
       state.queue = queueItems(event);
@@ -221,7 +234,7 @@ export function appendLocalUserMessage(state: SessionState, content: string): Se
     role: "user",
     content,
     thinking: "",
-    toolDeltas: [],
+    tools: [],
     status: "done"
   };
   state.messages.push(message);
@@ -233,8 +246,9 @@ function hydrateSessionMessageIntoState(state: SessionState, value: unknown, ind
   const role = roleFromHydratedMessage(message);
   const extracted = extractHydratedContent(message?.content);
   if (isHydratedToolResult(message)) {
-    const target = assistantMessageForToolDelta(state, JSON.stringify(message));
-    target.toolDeltas.push(JSON.stringify(message));
+    const toolResult = message as Record<string, unknown>;
+    const target = assistantMessageForToolPart(state, toolPartKey(toolResult));
+    mergeToolPart(target, toolPartFromHydratedToolResult(toolResult));
     target.status = "done";
     return;
   }
@@ -244,7 +258,7 @@ function hydrateSessionMessageIntoState(state: SessionState, value: unknown, ind
     role,
     content: extracted.content,
     thinking: extracted.thinking,
-    toolDeltas: extracted.toolDeltas,
+    tools: extracted.tools,
     status: "done"
   });
 }
@@ -258,18 +272,18 @@ function isHydratedToolResult(message: Record<string, unknown> | undefined): boo
   return stringField(message?.role) === "toolResult";
 }
 
-function extractHydratedContent(content: unknown): Pick<SessionMessage, "content" | "thinking" | "toolDeltas"> {
+function extractHydratedContent(content: unknown): Pick<SessionMessage, "content" | "thinking" | "tools"> {
   if (typeof content === "string") {
-    return { content, thinking: "", toolDeltas: [] };
+    return { content, thinking: "", tools: [] };
   }
 
   if (!Array.isArray(content)) {
-    return { content: "", thinking: "", toolDeltas: [] };
+    return { content: "", thinking: "", tools: [] };
   }
 
   const text: string[] = [];
   const thinking: string[] = [];
-  const toolDeltas: string[] = [];
+  const tools: MessageToolPart[] = [];
 
   for (const part of content) {
     const item = objectField(part);
@@ -289,12 +303,17 @@ function extractHydratedContent(content: unknown): Pick<SessionMessage, "content
       continue;
     }
 
-    if (shouldDisplayAssistantToolDelta(item)) {
-      toolDeltas.push(JSON.stringify(item));
+    if (isAssistantToolCall(item)) {
+      mergeToolPart({ tools }, toolPartFromToolCall(item));
+      continue;
+    }
+
+    if (isAssistantToolResult(item)) {
+      mergeToolPart({ tools }, toolPartFromHydratedToolResult(item));
     }
   }
 
-  return { content: text.join(""), thinking: thinking.join(""), toolDeltas };
+  return { content: text.join(""), thinking: thinking.join(""), tools };
 }
 
 function applyMessageUpdate(state: SessionState, event: PiEvent): void {
@@ -314,8 +333,10 @@ function applyMessageUpdate(state: SessionState, event: PiEvent): void {
     return;
   }
 
-  if (deltaType && shouldDisplayAssistantToolDelta(assistantEvent)) {
-    message.toolDeltas.push(JSON.stringify(assistantEvent));
+  if (deltaType && isAssistantToolCall(assistantEvent)) {
+    mergeToolPart(message, toolPartFromToolCall(assistantEvent));
+  } else if (deltaType && isAssistantToolResult(assistantEvent)) {
+    mergeToolPart(message, toolPartFromHydratedToolResult(assistantEvent));
   } else if (event.delta) {
     message.content += stringField(event.delta);
   }
@@ -333,7 +354,7 @@ function upsertMessage(state: SessionState, id: string, role: Role, status: Mess
     role,
     content: "",
     thinking: "",
-    toolDeltas: [],
+    tools: [],
     status
   };
   state.messages.push(message);
@@ -360,14 +381,34 @@ function updateTool(state: SessionState, id: string, update: (tool: ToolExecutio
   }
 }
 
-function appendToolDeltaToActiveAssistant(state: SessionState, event: PiEvent): void {
-  const delta = JSON.stringify(event);
-  const message = assistantMessageForToolDelta(state, delta);
-  message.toolDeltas.push(delta);
+function upsertExecutionTool(state: SessionState, event: PiEvent, update: (tool: ToolExecution) => void): void {
+  const id = toolId(event);
+  let tool = state.tools.find((item) => item.id === id);
+  if (!tool) {
+    tool = {
+      id,
+      name: toolName(event) || "tool",
+      status: "running",
+      input: toolInput(event),
+      log: []
+    };
+    state.tools.push(tool);
+  }
+  update(tool);
 }
 
-function assistantMessageForToolDelta(state: SessionState, delta: string): SessionMessage {
-  const messageWithTool = messageForExistingToolDelta(state, delta);
+function upsertMessageToolPart(
+  state: SessionState,
+  event: PiEvent,
+  options: { status: MessageToolStatus }
+): void {
+  const key = toolIdentityKey(event);
+  const message = assistantMessageForToolPart(state, key);
+  mergeToolPart(message, toolPartFromExecutionEvent(event, options.status, key));
+}
+
+function assistantMessageForToolPart(state: SessionState, key: string): SessionMessage {
+  const messageWithTool = key ? messageForExistingToolPart(state, key) : undefined;
   if (messageWithTool) {
     return messageWithTool;
   }
@@ -387,19 +428,8 @@ function assistantMessageForToolDelta(state: SessionState, delta: string): Sessi
   return upsertMessage(state, createId("assistant-tools"), "assistant", "streaming");
 }
 
-function messageForExistingToolDelta(state: SessionState, delta: string): SessionMessage | undefined {
-  const object = objectField(parseJson(delta));
-  const id = object ? rawToolDeltaId(object) : "";
-  if (!id) {
-    return undefined;
-  }
-
-  return state.messages.find((message) =>
-    message.toolDeltas.some((existing) => {
-      const existingObject = objectField(parseJson(existing));
-      return existingObject ? rawToolDeltaId(existingObject) === id : false;
-    })
-  );
+function messageForExistingToolPart(state: SessionState, key: string): SessionMessage | undefined {
+  return state.messages.find((message) => message.tools.some((tool) => tool.key === key || tool.id === key));
 }
 
 function isSyntheticToolMessage(message: SessionMessage | undefined): message is SessionMessage {
@@ -409,8 +439,203 @@ function isSyntheticToolMessage(message: SessionMessage | undefined): message is
       message.id.startsWith("assistant-tools-") &&
       !message.content &&
       !message.thinking &&
-      message.toolDeltas.length > 0
+      message.tools.length > 0
   );
+}
+
+function mergeToolPart(message: Pick<SessionMessage, "tools">, incoming: MessageToolPart): void {
+  const existing = existingToolPart(message.tools, incoming);
+  if (!existing) {
+    message.tools.push({ ...incoming, statusLabel: toolStatusLabel(incoming.status) });
+    return;
+  }
+
+  if (incoming.id) {
+    existing.id = incoming.id;
+  }
+  if (incoming.key && existing.key !== incoming.key && !message.tools.some((tool) => tool !== existing && tool.key === incoming.key)) {
+    existing.key = incoming.key;
+  }
+  if (incoming.name !== "tool") {
+    existing.name = incoming.name;
+    existing.label = incoming.label;
+  }
+  existing.detail ||= incoming.detail;
+  existing.input ??= incoming.input;
+  if (incoming.output !== undefined) {
+    existing.output = incoming.output;
+  }
+  existing.rawInput ??= incoming.rawInput;
+  if (incoming.rawOutput !== undefined) {
+    existing.rawOutput = incoming.rawOutput;
+  }
+
+  if (incoming.content) {
+    existing.content = incoming.content;
+  }
+
+  existing.status = mergedToolStatus(existing.status, incoming.status);
+  existing.statusLabel = toolStatusLabel(existing.status);
+}
+
+function existingToolPart(tools: MessageToolPart[], incoming: MessageToolPart): MessageToolPart | undefined {
+  const exact = tools.find((tool) => (incoming.key && tool.key === incoming.key) || (incoming.id && tool.id === incoming.id));
+  if (exact) {
+    return exact;
+  }
+
+  if ((incoming.status === "done" || incoming.status === "error") && incoming.output !== undefined) {
+    const unresolved = tools.filter((tool) => tool.status === "running" && tool.output === undefined);
+    if (unresolved.length === 1) {
+      return unresolved[0];
+    }
+  }
+
+  return undefined;
+}
+
+function toolPartFromExecutionEvent(event: PiEvent, status: MessageToolStatus, key = toolIdentityKey(event)): MessageToolPart {
+  const output = event.output ?? event.result ?? event.partialResult ?? event.delta ?? event.message;
+  const content = textFromToolPayload(output) || stringField(output) || jsonDisplay(output);
+
+  return {
+    type: "tool",
+    key,
+    id: key,
+    label: toolName(event) || "Tool call",
+    name: toolName(event) || "tool",
+    detail: toolDetail(event) || undefined,
+    status,
+    statusLabel: toolStatusLabel(status),
+    content,
+    input: toolInput(event),
+    output,
+    rawInput: toolInput(event),
+    rawOutput: output
+  };
+}
+
+function toolPartFromToolCall(event: PiEvent): MessageToolPart {
+  const key = toolIdentityKey(event);
+  return {
+    type: "tool",
+    key,
+    id: key,
+    label: toolName(event) || "Tool call",
+    name: toolName(event) || "tool",
+    detail: toolDetail(event) || undefined,
+    status: "running",
+    statusLabel: toolStatusLabel("running"),
+    content: "",
+    input: toolInput(event),
+    rawInput: toolInput(event)
+  };
+}
+
+function toolPartFromHydratedToolResult(event: PiEvent): MessageToolPart {
+  const key = toolIdentityKey(event);
+  const failed = isToolError(event);
+  const output = event.output ?? event.result ?? event.content;
+  return {
+    type: "tool",
+    key,
+    id: key,
+    label: toolName(event) || "Tool call",
+    name: toolName(event) || "tool",
+    detail: toolDetail(event) || undefined,
+    status: failed ? "error" : "done",
+    statusLabel: toolStatusLabel(failed ? "error" : "done"),
+    content: textFromToolPayload(output) || stringField(output) || jsonDisplay(output),
+    output,
+    rawOutput: output
+  };
+}
+
+function isToolError(event: PiEvent): boolean {
+  const result = objectField(event.result);
+  const output = objectField(event.output);
+  return (
+    event.isError === true ||
+    event.is_error === true ||
+    event.success === false ||
+    event.error === true ||
+    result?.isError === true ||
+    result?.is_error === true ||
+    result?.success === false ||
+    result?.error === true ||
+    output?.isError === true ||
+    output?.is_error === true ||
+    output?.success === false ||
+    output?.error === true
+  );
+}
+
+function mergedToolStatus(current: MessageToolStatus, incoming: MessageToolStatus): MessageToolStatus {
+  if (incoming === "error" || current === "error") {
+    return "error";
+  }
+  if (incoming === "done") {
+    return "done";
+  }
+  if (current === "done") {
+    return "done";
+  }
+  if (incoming === "running" || current === "running") {
+    return "running";
+  }
+  return "running";
+}
+
+function toolStatusLabel(status: MessageToolStatus): string {
+  switch (status) {
+    case "running":
+      return "In progress";
+    case "done":
+      return "Complete";
+    case "error":
+      return "Error";
+  }
+}
+
+function toolPartKey(event: PiEvent | Record<string, unknown> | undefined): string {
+  if (!event) {
+    return "";
+  }
+  return firstString(event.toolCallId, event.tool_call_id, event.toolExecutionId, event.tool_execution_id, event.tool_use_id, event.toolUseId, event.id);
+}
+
+function toolIdentityKey(event: PiEvent): string {
+  return toolPartKey(event) || fallbackToolKey(event) || createId("tool");
+}
+
+function fallbackToolKey(event: PiEvent): string {
+  return [toolName(event) || "tool", toolDetail(event), jsonDisplay(toolInput(event))].filter(Boolean).join(":");
+}
+
+function toolName(event: PiEvent): string {
+  return firstDisplayString(event.toolName, event.tool_name, event.name, event.tool, event.function);
+}
+
+function toolDetail(event: PiEvent): string {
+  if (toolName(event) === "bash") {
+    return commandField(event);
+  }
+
+  return pathField(event) || commandField(event);
+}
+
+function toolInput(event: PiEvent): unknown {
+  return event.input ?? event.args ?? objectOrJsonField(event.arguments) ?? objectField(event.tool)?.input ?? objectField(event.tool)?.args;
+}
+
+function isAssistantToolCall(event: PiEvent | undefined): event is PiEvent {
+  const type = stringField(event?.type);
+  return type === "toolCall" || type === "tool_call" || type === "tool_use";
+}
+
+function isAssistantToolResult(event: PiEvent | undefined): event is PiEvent {
+  const type = stringField(event?.type);
+  return type === "toolResult" || type === "tool_result" || stringField(event?.role) === "toolResult";
 }
 
 function addExtensionRequest(state: SessionState, event: PiEvent): void {
@@ -552,7 +777,14 @@ function messageId(event: PiEvent): string {
 }
 
 function toolId(event: PiEvent): string {
-  return stringField(event.id) || stringField(event.toolExecutionId) || stringField(event.toolCallId) || `tool-${Date.now()}`;
+  return (
+    stringField(event.id) ||
+    stringField(event.toolExecutionId) ||
+    stringField(event.tool_execution_id) ||
+    stringField(event.toolCallId) ||
+    stringField(event.tool_call_id) ||
+    createId("tool")
+  );
 }
 
 function roleFromEvent(event: PiEvent): Role {
@@ -607,10 +839,8 @@ function applyCompleteMessage(message: SessionMessage, event: PiEvent): void {
     if (extracted.thinking && !message.thinking) {
       message.thinking = extracted.thinking;
     }
-    for (const delta of extracted.toolDeltas) {
-      if (!message.toolDeltas.includes(delta)) {
-        message.toolDeltas.push(delta);
-      }
+    for (const tool of extracted.tools) {
+      mergeToolPart(message, tool);
     }
   }
 }
@@ -655,29 +885,34 @@ function textFromContent(value: unknown): string {
     .join("");
 }
 
-function shouldDisplayAssistantToolDelta(event: PiEvent | undefined): event is PiEvent {
-  if (!event) {
-    return false;
+function textFromToolPayload(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
   }
 
-  const type = stringField(event.type);
-  if (isCompleteAssistantToolDeltaType(type)) {
-    return true;
+  if (Array.isArray(value)) {
+    return value
+      .map((part) => {
+        const item = objectField(part);
+        return stringField(item?.text);
+      })
+      .filter(Boolean)
+      .join("");
   }
 
-  return hasUsefulToolDeltaInfo(event);
+  return textFromContent(value);
 }
 
-function isCompleteAssistantToolDeltaType(type: string): boolean {
-  return type === "toolCall" || type === "tool_call" || type === "tool_use" || type === "toolResult" || type === "tool_result";
-}
+function jsonDisplay(value: unknown): string {
+  if (value === undefined || value === null) {
+    return "";
+  }
 
-function hasUsefulToolDeltaInfo(event: PiEvent): boolean {
-  return Boolean(
-    firstDisplayString(event.toolName, event.tool_name, event.name, event.tool, event.function) ||
-      commandField(event) ||
-      pathField(event)
-  );
+  if (typeof value === "string") {
+    return value;
+  }
+
+  return JSON.stringify(value, null, 2);
 }
 
 function commandField(event: PiEvent): string {

@@ -6,7 +6,6 @@ import Message from "./components/ai-elements/Message.vue";
 import PromptInput from "./components/ai-elements/PromptInput.vue";
 import { renderMarkdown } from "./lib/markdown";
 import { RpcClient, type BridgeMessage, type BridgeStatus, type PiSessionSummary } from "./lib/rpcClient";
-import { groupToolDeltas } from "./lib/toolDeltas";
 import {
   acknowledgeExtensionRequest,
   appendLocalUserMessage,
@@ -88,7 +87,11 @@ const themeIcon = computed(() => ({ light: Sun, dark: Moon, system: Monitor })[t
 const sidebarIcon = computed(() => (sidebarCollapsed.value ? PanelLeftOpen : PanelLeftClose));
 const themeTitle = computed(() => `Theme: ${themePreference.value}`);
 const sessionError = computed(() => (session.statusText.startsWith("Pi request failed") ? session.statusText : ""));
-const toolDeltaCount = computed(() => session.messages.reduce((total, message) => total + message.toolDeltas.length, 0));
+const toolActivitySignature = computed(() =>
+  session.messages
+    .map((message) => message.tools.map((tool) => `${tool.key}:${tool.status}:${tool.content.length}`).join("|"))
+    .join(";")
+);
 const sessionMetadataRows = computed(() => {
   const rows = [
     { label: "Connection", value: connectionLabel.value },
@@ -132,7 +135,7 @@ watch(pendingExtension, (request) => {
 });
 
 watch(
-  () => [activeSessionId.value, session.messages.length, toolDeltaCount.value],
+  () => [activeSessionId.value, session.messages.length, toolActivitySignature.value],
   () => {
     void scrollMessagesToEnd();
   },
@@ -520,7 +523,7 @@ async function scrollMessagesToEnd() {
                 <summary>Thinking</summary>
                 <pre>{{ message.thinking }}</pre>
               </details>
-              <details v-for="tool in groupToolDeltas(message.toolDeltas)" :key="`${message.id}-${tool.key}`" class="thinking tool-detail">
+              <details v-for="tool in message.tools" :key="`${message.id}-${tool.key}`" class="thinking tool-detail">
                 <summary>
                   <span class="tool-summary-text">
                     <span class="tool-summary-name">{{ tool.label }}</span>
@@ -538,7 +541,7 @@ async function scrollMessagesToEnd() {
                 <pre>{{ tool.content }}</pre>
               </details>
               <div
-                v-if="message.content || (!message.thinking && message.toolDeltas.length === 0)"
+                v-if="message.content || (!message.thinking && message.tools.length === 0)"
                 class="message-markdown"
                 v-html="renderMarkdown(message.content || '...')"
               ></div>
