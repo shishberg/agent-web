@@ -71,6 +71,8 @@ export type PiResponse = {
   [key: string]: unknown;
 };
 
+let generatedId = 0;
+
 export function createInitialSessionState(): SessionState {
   return {
     connected: false,
@@ -120,7 +122,7 @@ export function reduceSessionEvent(state: SessionState, event: PiEvent): Session
       state.activeMessageId = null;
       break;
     case "tool_execution_start":
-      state.tools.unshift({
+      state.tools.push({
         id: toolId(event),
         name: stringField(event.name) || stringField(event.toolName) || "tool",
         status: "running",
@@ -190,6 +192,19 @@ export function acknowledgeExtensionRequest(state: SessionState, id: string): vo
   state.extensionRequests = state.extensionRequests.filter((request) => request.id !== id);
 }
 
+export function appendLocalUserMessage(state: SessionState, content: string): SessionMessage {
+  const message: SessionMessage = {
+    id: createId("local-user"),
+    role: "user",
+    content,
+    thinking: "",
+    toolDeltas: [],
+    status: "done"
+  };
+  state.messages.push(message);
+  return message;
+}
+
 function applyMessageUpdate(state: SessionState, event: PiEvent): void {
   const id = resolveMessageId(state, event);
   state.activeMessageId = id;
@@ -241,7 +256,7 @@ function updateTool(state: SessionState, id: string, update: (tool: ToolExecutio
 }
 
 function addExtensionRequest(state: SessionState, event: PiEvent): void {
-  const id = stringField(event.id) || crypto.randomUUID();
+  const id = stringField(event.id) || createId("extension");
   const method = stringField(event.method) || "notify";
   const params = extensionParams(event);
 
@@ -279,13 +294,18 @@ function extensionParams(event: PiEvent): Record<string, unknown> {
 
 function addActivity(state: SessionState, event: PiEvent, summary: string): void {
   state.activity.unshift({
-    id: crypto.randomUUID(),
+    id: createId("activity"),
     type: String(event.type ?? "unknown"),
     summary,
     time: new Date().toLocaleTimeString(),
     raw: event
   });
   state.activity = state.activity.slice(0, 80);
+}
+
+function createId(prefix: string): string {
+  generatedId += 1;
+  return `${prefix}-${Date.now()}-${generatedId}`;
 }
 
 function summarizeEvent(event: PiEvent): string {

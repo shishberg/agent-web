@@ -1,16 +1,26 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import Conversation from "./components/ai-elements/Conversation.vue";
 import Message from "./components/ai-elements/Message.vue";
 import PromptInput from "./components/ai-elements/PromptInput.vue";
 import { RpcClient, type BridgeMessage, type BridgeStatus, type PiConnectionConfig } from "./lib/rpcClient";
 import {
   acknowledgeExtensionRequest,
+  appendLocalUserMessage,
   createInitialSessionState,
   reduceSessionEvent,
   reduceSessionResponse,
-  type ExtensionRequest
+  type ExtensionRequest,
+  type SessionState
 } from "./lib/sessionState";
+
+type LocalChatSession = {
+  id: string;
+  title: string;
+  state: SessionState;
+};
+
+type ThemePreference = "light" | "dark" | "system";
 
 const config = reactive<PiConnectionConfig>({
   provider: "",
@@ -20,34 +30,41 @@ const config = reactive<PiConnectionConfig>({
   extraArgs: ""
 });
 
-const session = reactive(createInitialSessionState());
+let generatedSessionId = 1;
+let systemThemeQuery: MediaQueryList | null = null;
+const localSessions = reactive<LocalChatSession[]>([createLocalSession()]);
+const activeSessionId = ref(localSessions[0].id);
 const prompt = ref("");
 const queueMode = ref<"steer" | "follow_up">("steer");
 const status = ref<BridgeStatus>("idle");
 const stderr = ref<string[]>([]);
 const extensionValue = ref("");
+const sidebarCollapsed = ref(false);
+const themePreference = ref<ThemePreference>(readThemePreference());
+const messageScroller = ref<HTMLElement | null>(null);
+const rpcSessionId = ref(activeSessionId.value);
 
 const client = new RpcClient({
   onOpen: () => {
     status.value = "connected";
-    session.connected = true;
-    session.statusText = "Bridge connected";
+    syncConnectionState(true, "Bridge connected", false);
   },
   onClose: () => {
     status.value = "exited";
-    session.connected = false;
-    session.running = false;
-    session.statusText = "Connection closed";
+    syncConnectionState(false, "Connection closed", false);
   },
   onError: (message) => {
     status.value = "error";
-    session.statusText = message;
+    session.value.statusText = message;
   },
   onMessage: handleBridgeMessage
 });
 
-const canSend = computed(() => session.connected && prompt.value.trim().length > 0);
-const pendingExtension = computed(() => session.extensionRequests[0]);
+const activeChat = computed(() => localSessions.find((item) => item.id === activeSessionId.value) ?? localSessions[0]);
+const session = computed(() => activeChat.value.state);
+const isConnected = computed(() => session.value.connected);
+const canSend = computed(() => isConnected.value && prompt.value.trim().length > 0);
+const pendingExtension = computed(() => session.value.extensionRequests[0]);
 const extensionOptions = computed(() => {
   const options = pendingExtension.value?.params.options;
   return Array.isArray(options) ? options.map(String) : [];
@@ -57,9 +74,15 @@ const extensionMessage = computed(() => stringParam("message") || stringParam("l
 const extensionUsesEditor = computed(() => pendingExtension.value?.method === "input" || pendingExtension.value?.method === "editor");
 const connectionLabel = computed(() => {
   if (status.value === "running") return "Pi running";
-  if (session.connected) return "Connected";
+  if (isConnected.value) return "Connected";
+  if (status.value === "connecting") return "Connecting";
+  if (status.value === "error") return "Error";
   return "Disconnected";
 });
+const connectionActionLabel = computed(() => (isConnected.value ? "Disconnect" : "Connect"));
+const statusBadge = computed(() => (session.value.running ? "Running" : connectionLabel.value));
+const themeIcon = computed(() => ({ light: "☼", dark: "◐", system: "▣" })[themePreference.value]);
+const themeTitle = computed(() => `Theme: ${themePreference.value}`);
 
 watch(pendingExtension, (request) => {
   if (!request) {
@@ -70,6 +93,38 @@ watch(pendingExtension, (request) => {
   extensionValue.value = stringParam("prefill") || stringParam("text") || extensionOptions.value[0] || "";
 });
 
+watch(
+  () => [activeSessionId.value, session.value.messages.length, session.value.tools.length],
+  () => {
+    void scrollMessagesToEnd();
+  },
+  { flush: "post" }
+);
+
+watch(themePreference, (value) => {
+  localStorage.setItem("agent-web-theme", value);
+  applyTheme();
+});
+
+onMounted(() => {
+  systemThemeQuery = window.matchMedia("(prefers-color-scheme: dark)");
+  systemThemeQuery.addEventListener("change", applyTheme);
+  applyTheme();
+});
+
+onBeforeUnmount(() => {
+  systemThemeQuery?.removeEventListener("change", applyTheme);
+});
+
+function createLocalSession(): LocalChatSession {
+  const state = createInitialSessionState();
+  return {
+    id: `local-${generatedSessionId++}`,
+    title: "New chat",
+    state
+  };
+}
+
 function connect() {
   status.value = "connecting";
   client.connect({ ...config });
@@ -79,11 +134,49 @@ function disconnect() {
   client.disconnect();
 }
 
+function toggleConnection() {
+  if (isConnected.value) {
+    disconnect();
+  } else {
+    connect();
+  }
+}
+
+function newChat() {
+  const nextSession = createLocalSession();
+  nextSession.state.connected = isConnected.value;
+  nextSession.state.running = session.value.running;
+  nextSession.state.statusText = session.value.statusText;
+  localSessions.unshift(nextSession);
+  activeSessionId.value = nextSession.id;
+
+  if (isConnected.value) {
+    rpcSessionId.value = nextSession.id;
+    client.command("new_session");
+  }
+}
+
+function selectChat(id: string) {
+  activeSessionId.value = id;
+}
+
+function cycleTheme() {
+  const themes: ThemePreference[] = ["light", "dark", "system"];
+  const currentIndex = themes.indexOf(themePreference.value);
+  themePreference.value = themes[(currentIndex + 1) % themes.length];
+}
+
 function sendPrompt() {
   const message = prompt.value.trim();
-  if (!message) return;
+  if (!message || !isConnected.value) return;
 
-  if (session.turnActive) {
+  appendLocalUserMessage(session.value, message);
+  rpcSessionId.value = activeSessionId.value;
+  if (activeChat.value.title === "New chat") {
+    activeChat.value.title = titleFromPrompt(message);
+  }
+
+  if (session.value.turnActive) {
     client.command(queueMode.value, { message });
   } else {
     client.command("prompt", { message });
@@ -92,23 +185,9 @@ function sendPrompt() {
   prompt.value = "";
 }
 
-function sendSimple(command: string, payload: Record<string, unknown> = {}) {
-  client.command(command, payload);
-}
-
-function setAutoRetry() {
-  session.autoRetry = !session.autoRetry;
-  client.command("set_auto_retry", { enabled: session.autoRetry });
-}
-
-function setAutoCompaction() {
-  session.autoCompaction = !session.autoCompaction;
-  client.command("set_auto_compaction", { enabled: session.autoCompaction });
-}
-
 function respondToExtension(request: ExtensionRequest, accepted: boolean) {
   client.command("extension_ui_response", extensionResponsePayload(request, accepted));
-  acknowledgeExtensionRequest(session, request.id);
+  acknowledgeExtensionRequest(session.value, request.id);
   extensionValue.value = "";
 }
 
@@ -130,10 +209,12 @@ function stringParam(key: string): string {
 }
 
 function handleBridgeMessage(message: BridgeMessage) {
+  const targetState = rpcSessionState();
+
   if (message.source === "bridge") {
     if (message.type === "error") {
       status.value = "error";
-      session.statusText = message.message ?? "Bridge error";
+      targetState.statusText = message.message ?? "Bridge error";
     }
     return;
   }
@@ -141,22 +222,20 @@ function handleBridgeMessage(message: BridgeMessage) {
   if (message.type === "status") {
     const hadError = status.value === "error";
     status.value = hadError && message.status === "exited" ? "error" : message.status === "running" ? "running" : message.status;
-    session.connected = message.status !== "exited";
-    session.running = message.status === "running";
-    if (!(hadError && message.status === "exited")) {
-      session.statusText = message.status === "exited" ? "Pi exited" : `Pi ${message.status}`;
-    }
+    const connected = message.status !== "exited";
+    const statusText = message.status === "exited" ? "Pi exited" : `Pi ${message.status}`;
+    syncConnectionState(connected, hadError && message.status === "exited" ? targetState.statusText : statusText, message.status === "running");
     return;
   }
 
   if (message.type === "event") {
     prefillEditorPrompt(message.event);
-    reduceSessionEvent(session, message.event);
+    reduceSessionEvent(targetState, message.event);
     return;
   }
 
   if (message.type === "response") {
-    reduceSessionResponse(session, message.response);
+    reduceSessionResponse(targetState, message.response);
     return;
   }
 
@@ -167,7 +246,7 @@ function handleBridgeMessage(message: BridgeMessage) {
   }
 
   status.value = "error";
-  session.statusText = message.message;
+  targetState.statusText = message.message;
 }
 
 function prefillEditorPrompt(event: Record<string, unknown>) {
@@ -181,142 +260,149 @@ function prefillEditorPrompt(event: Record<string, unknown>) {
     prompt.value = text;
   }
 }
+
+function syncConnectionState(connected: boolean, statusText: string, running: boolean) {
+  localSessions.forEach((item) => {
+    item.state.connected = connected;
+    item.state.running = running;
+    item.state.statusText = statusText;
+  });
+}
+
+function rpcSessionState(): SessionState {
+  return localSessions.find((item) => item.id === rpcSessionId.value)?.state ?? session.value;
+}
+
+function titleFromPrompt(message: string): string {
+  const title = message.replace(/\s+/g, " ").trim();
+  return title.length > 34 ? `${title.slice(0, 34)}...` : title || "New chat";
+}
+
+function formatValue(value: unknown): string {
+  if (value === undefined || value === null || value === "") {
+    return "";
+  }
+  return typeof value === "string" ? value : JSON.stringify(value, null, 2);
+}
+
+function readThemePreference(): ThemePreference {
+  const stored = localStorage.getItem("agent-web-theme");
+  return stored === "light" || stored === "dark" || stored === "system" ? stored : "system";
+}
+
+function applyTheme() {
+  const prefersDark = systemThemeQuery?.matches ?? window.matchMedia("(prefers-color-scheme: dark)").matches;
+  const dark = themePreference.value === "dark" || (themePreference.value === "system" && prefersDark);
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+}
+
+async function scrollMessagesToEnd() {
+  await nextTick();
+  const scroller = messageScroller.value;
+  if (scroller) {
+    scroller.scrollTop = scroller.scrollHeight;
+  }
+}
 </script>
 
 <template>
-  <main class="app-shell">
-    <header class="topbar">
-      <div>
-        <h1>Pi Agent Workbench</h1>
-        <p>{{ session.statusText }}</p>
+  <main class="app-shell" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
+    <aside class="sidebar" aria-label="Sessions">
+      <div class="sidebar-header">
+        <button class="icon-button" type="button" :title="themeTitle" @click="cycleTheme">{{ themeIcon }}</button>
+        <button class="icon-button" type="button" title="New chat" @click="newChat">+</button>
       </div>
-      <div class="status-pill" :class="status">{{ connectionLabel }}</div>
-    </header>
 
-    <section class="workspace">
-      <aside class="sidebar">
-        <section class="panel">
-          <h2>Connection</h2>
-          <label>
-            Provider
-            <input v-model="config.provider" placeholder="default" />
-          </label>
-          <label>
-            Model
-            <input v-model="config.model" placeholder="default" />
-          </label>
-          <label>
-            Session dir
-            <input v-model="config.sessionDir" placeholder="Pi default" />
-          </label>
-          <label>
-            Extra args
-            <input v-model="config.extraArgs" placeholder="--flag value" />
-          </label>
-          <label class="check-row">
-            <input v-model="config.noSession" type="checkbox" />
-            <span>No session</span>
-          </label>
-          <div class="button-row">
-            <button @click="connect">Connect</button>
-            <button class="secondary" :disabled="!session.connected" @click="disconnect">Disconnect</button>
-          </div>
-        </section>
+      <nav class="session-list" aria-label="Local sessions">
+        <button
+          v-for="item in localSessions"
+          :key="item.id"
+          class="session-item"
+          :class="{ active: item.id === activeSessionId }"
+          type="button"
+          @click="selectChat(item.id)"
+        >
+          <span>{{ item.title }}</span>
+        </button>
+      </nav>
 
-        <section class="panel">
-          <h2>Controls</h2>
-          <div class="button-grid">
-            <button :disabled="!session.connected" @click="sendSimple('abort')">Abort</button>
-            <button :disabled="!session.connected" @click="sendSimple('new_session')">New session</button>
-            <button :disabled="!session.connected" @click="sendSimple('compact')">Compact</button>
-            <button :disabled="!session.connected" @click="sendSimple('get_state')">Get state</button>
-          </div>
-          <label class="check-row">
-            <input :checked="session.autoRetry" type="checkbox" @change="setAutoRetry" />
-            <span>Auto retry</span>
-          </label>
-          <label class="check-row">
-            <input :checked="session.autoCompaction" type="checkbox" @change="setAutoCompaction" />
-            <span>Auto compaction</span>
-          </label>
-        </section>
+      <div class="profile-row">
+        <div class="avatar">U</div>
+        <div class="profile-copy">
+          <strong>User</strong>
+          <span>{{ session.statusText }}</span>
+        </div>
+        <button class="connect-button" type="button" @click="toggleConnection">{{ connectionActionLabel }}</button>
+      </div>
+    </aside>
 
-        <section class="panel">
-          <h2>Queue</h2>
-          <div v-if="session.queue.length === 0" class="empty">No queued commands</div>
-          <ul v-else class="queue-list">
-            <li v-for="item in session.queue" :key="String(item.id ?? item.command)">
-              <span>{{ item.command ?? item.label ?? "queued" }}</span>
-            </li>
-          </ul>
-        </section>
-      </aside>
+    <section class="main-chat">
+      <header class="chat-header">
+        <button class="icon-button" type="button" title="Toggle sidebar" @click="sidebarCollapsed = !sidebarCollapsed">☰</button>
+        <h1>{{ activeChat.title }}</h1>
+        <span class="status-pill" :class="status">{{ statusBadge }}</span>
+      </header>
 
       <Conversation>
-        <div class="conversation-scroll">
-          <div v-if="session.messages.length === 0" class="welcome">
-            <h2>Start a Pi RPC session</h2>
-            <p>Connect to a local Pi install, then send a prompt. Streaming output, tools, queue updates, and extension dialogs will appear here.</p>
+        <div ref="messageScroller" class="conversation-scroll">
+          <div v-if="session.messages.length === 0 && session.tools.length === 0" class="welcome">
+            <h2>Start a chat with Pi</h2>
+            <p>Connect, then send a prompt. Tool activity and extension requests stay inline with the conversation.</p>
           </div>
-          <Message
-            v-for="message in session.messages"
-            :key="message.id"
-            :role="message.role"
-            :streaming="message.status === 'streaming'"
-          >
-            <details v-if="message.thinking" class="thinking">
-              <summary>Thinking</summary>
-              <pre>{{ message.thinking }}</pre>
+
+          <div class="message-stack">
+            <Message
+              v-for="message in session.messages"
+              :key="message.id"
+              :role="message.role"
+              :streaming="message.status === 'streaming'"
+            >
+              <details v-if="message.thinking" class="thinking">
+                <summary>Thinking</summary>
+                <pre>{{ message.thinking }}</pre>
+              </details>
+              <p>{{ message.content || "..." }}</p>
+              <details v-for="delta in message.toolDeltas" :key="delta" class="inline-activity">
+                <summary>Assistant activity</summary>
+                <pre>{{ delta }}</pre>
+              </details>
+            </Message>
+
+            <details v-for="tool in session.tools" :key="tool.id" class="inline-activity tool-row" :class="tool.status">
+              <summary>
+                <span class="activity-name">{{ tool.name }}</span>
+                <span>{{ tool.status }}</span>
+              </summary>
+              <pre v-if="formatValue(tool.input)">{{ formatValue(tool.input) }}</pre>
+              <pre v-if="tool.log.length">{{ tool.log.join('\n') }}</pre>
+              <pre v-if="formatValue(tool.output)">{{ formatValue(tool.output) }}</pre>
             </details>
-            <p>{{ message.content || "..." }}</p>
-            <pre v-for="delta in message.toolDeltas" :key="delta" class="delta">{{ delta }}</pre>
-          </Message>
+
+            <details v-if="session.queue.length" class="inline-activity">
+              <summary>{{ session.queue.length }} queued command{{ session.queue.length === 1 ? "" : "s" }}</summary>
+              <ol class="compact-list">
+                <li v-for="item in session.queue" :key="String(item.id ?? item.command)">
+                  {{ item.label ?? item.command ?? "queued" }}
+                </li>
+              </ol>
+            </details>
+
+            <details v-if="stderr.length" class="inline-activity error-row">
+              <summary>stderr</summary>
+              <pre>{{ stderr.join('') }}</pre>
+            </details>
+          </div>
         </div>
 
         <div class="composer">
-          <div class="composer-options">
-            <label>
-              While streaming
-              <select v-model="queueMode">
-                <option value="steer">Steer current turn</option>
-                <option value="follow_up">Queue follow-up</option>
-              </select>
-            </label>
-          </div>
-          <PromptInput v-model="prompt" :disabled="!session.connected" placeholder="Ask Pi to inspect, edit, explain, or run a task..." @submit="sendPrompt" />
+          <PromptInput
+            v-model="prompt"
+            :send-disabled="!canSend"
+            placeholder="Send a message..."
+            @submit="sendPrompt"
+          />
         </div>
       </Conversation>
-
-      <aside class="rightbar">
-        <section class="panel tools-panel">
-          <h2>Tools</h2>
-          <div v-if="session.tools.length === 0" class="empty">No tool activity</div>
-          <article v-for="tool in session.tools" :key="tool.id" class="tool-card" :class="tool.status">
-            <div class="tool-header">
-              <strong>{{ tool.name }}</strong>
-              <span>{{ tool.status }}</span>
-            </div>
-            <pre v-if="tool.input">{{ JSON.stringify(tool.input, null, 2) }}</pre>
-            <pre v-if="tool.log.length">{{ tool.log.join('\n') }}</pre>
-            <pre v-if="tool.output">{{ typeof tool.output === 'string' ? tool.output : JSON.stringify(tool.output, null, 2) }}</pre>
-          </article>
-        </section>
-
-        <section class="panel">
-          <h2>Activity</h2>
-          <ol class="activity-list">
-            <li v-for="item in session.activity" :key="item.id">
-              <time>{{ item.time }}</time>
-              <span>{{ item.summary }}</span>
-            </li>
-          </ol>
-        </section>
-
-        <section v-if="stderr.length" class="panel stderr">
-          <h2>stderr</h2>
-          <pre>{{ stderr.join('') }}</pre>
-        </section>
-      </aside>
     </section>
 
     <div v-if="pendingExtension" class="modal-backdrop">

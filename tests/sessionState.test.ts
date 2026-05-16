@@ -1,7 +1,28 @@
 import { describe, expect, it } from "vitest";
-import { createInitialSessionState, reduceSessionEvent, reduceSessionResponse } from "../src/lib/sessionState";
+import {
+  appendLocalUserMessage,
+  createInitialSessionState,
+  reduceSessionEvent,
+  reduceSessionResponse
+} from "../src/lib/sessionState";
 
 describe("session state reducer", () => {
+  it("adds a local user prompt immediately as a completed message", () => {
+    const state = createInitialSessionState();
+
+    appendLocalUserMessage(state, "Please inspect the app");
+
+    expect(state.messages).toEqual([
+      expect.objectContaining({
+        role: "user",
+        content: "Please inspect the app",
+        status: "done",
+        thinking: "",
+        toolDeltas: []
+      })
+    ]);
+  });
+
   it("builds assistant text from streaming text deltas", () => {
     const state = createInitialSessionState();
     reduceSessionEvent(state, { type: "message_start", messageId: "m1", role: "assistant" });
@@ -57,6 +78,15 @@ describe("session state reducer", () => {
       { id: "steering-0", command: "steer", label: "fix this", value: "fix this" },
       { id: "followUp-0", command: "follow_up", label: "summarize", value: "summarize" }
     ]);
+  });
+
+  it("keeps tool executions in chronological order", () => {
+    const state = createInitialSessionState();
+
+    reduceSessionEvent(state, { type: "tool_execution_start", toolCallId: "first", toolName: "read" });
+    reduceSessionEvent(state, { type: "tool_execution_start", toolCallId: "second", toolName: "write" });
+
+    expect(state.tools.map((tool) => tool.id)).toEqual(["first", "second"]);
   });
 
   it("keeps streamed message updates together when Pi omits message ids", () => {
