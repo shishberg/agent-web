@@ -1,41 +1,29 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { Moon, Monitor, PanelLeftClose, PanelLeftOpen, Plug, Plus, Sun, Unplug } from "@lucide/vue";
+import { Moon, Monitor, PanelLeftClose, PanelLeftOpen, Plus, Sun } from "@lucide/vue";
 import Conversation from "./components/ai-elements/Conversation.vue";
 import Message from "./components/ai-elements/Message.vue";
 import PromptInput from "./components/ai-elements/PromptInput.vue";
 import { renderMarkdown } from "./lib/markdown";
-import { RpcClient, type BridgeMessage, type BridgeStatus, type PiConnectionConfig } from "./lib/rpcClient";
+import { RpcClient, type BridgeMessage, type BridgeStatus, type PiSessionSummary } from "./lib/rpcClient";
 import {
   acknowledgeExtensionRequest,
   appendLocalUserMessage,
   createInitialSessionState,
+  hydrateSessionMessages,
   reduceSessionEvent,
   reduceSessionResponse,
   type ExtensionRequest,
   type SessionState
 } from "./lib/sessionState";
 
-type LocalChatSession = {
-  id: string;
-  title: string;
-  state: SessionState;
-};
-
 type ThemePreference = "light" | "dark" | "system";
 
-const config = reactive<PiConnectionConfig>({
-  provider: "",
-  model: "",
-  noSession: false,
-  sessionDir: "",
-  extraArgs: ""
-});
-
-let generatedSessionId = 1;
 let systemThemeQuery: MediaQueryList | null = null;
-const localSessions = reactive<LocalChatSession[]>([createLocalSession()]);
-const activeSessionId = ref(localSessions[0].id);
+const piSessions = ref<PiSessionSummary[]>([]);
+const activeSessionId = ref<string | null>(null);
+const draftTitle = ref("New chat");
+const session = reactive<SessionState>(createInitialSessionState());
 const prompt = ref("");
 const queueMode = ref<"steer" | "follow_up">("steer");
 const status = ref<BridgeStatus>("idle");
@@ -44,29 +32,31 @@ const extensionValue = ref("");
 const sidebarCollapsed = ref(false);
 const themePreference = ref<ThemePreference>(readThemePreference());
 const messageScroller = ref<HTMLElement | null>(null);
-const rpcSessionId = ref(activeSessionId.value);
 
 const client = new RpcClient({
   onOpen: () => {
     status.value = "connected";
-    syncConnectionState(true, "Bridge connected", false);
+    session.connected = true;
+    session.statusText = "Bridge connected";
   },
   onClose: () => {
     status.value = "exited";
-    syncConnectionState(false, "Connection closed", false);
+    session.connected = false;
+    session.running = false;
+    session.statusText = "Connection closed";
   },
   onError: (message) => {
     status.value = "error";
-    session.value.statusText = message;
+    session.statusText = message;
   },
   onMessage: handleBridgeMessage
 });
 
-const activeChat = computed(() => localSessions.find((item) => item.id === activeSessionId.value) ?? localSessions[0]);
-const session = computed(() => activeChat.value.state);
-const isConnected = computed(() => session.value.connected);
-const canSend = computed(() => isConnected.value && prompt.value.trim().length > 0);
-const pendingExtension = computed(() => session.value.extensionRequests[0]);
+const activePiSession = computed(() => piSessions.value.find((item) => item.id === activeSessionId.value));
+const activeTitle = computed(() => activePiSession.value?.title ?? draftTitle.value);
+const isConnected = computed(() => session.connected);
+const canSend = computed(() => prompt.value.trim().length > 0);
+const pendingExtension = computed(() => session.extensionRequests[0]);
 const extensionOptions = computed(() => {
   const options = pendingExtension.value?.params.options;
   return Array.isArray(options) ? options.map(String) : [];
@@ -81,11 +71,9 @@ const connectionLabel = computed(() => {
   if (status.value === "error") return "Error";
   return "Disconnected";
 });
-const connectionActionLabel = computed(() => (isConnected.value ? "Disconnect" : "Connect"));
-const statusBadge = computed(() => (session.value.running ? "Running" : connectionLabel.value));
+const statusBadge = computed(() => (session.running ? "Running" : connectionLabel.value));
 const themeIcon = computed(() => ({ light: Sun, dark: Moon, system: Monitor })[themePreference.value]);
 const sidebarIcon = computed(() => (sidebarCollapsed.value ? PanelLeftOpen : PanelLeftClose));
-const connectionIcon = computed(() => (isConnected.value ? Unplug : Plug));
 const themeTitle = computed(() => `Theme: ${themePreference.value}`);
 
 watch(pendingExtension, (request) => {
@@ -98,7 +86,7 @@ watch(pendingExtension, (request) => {
 });
 
 watch(
-  () => [activeSessionId.value, session.value.messages.length, session.value.tools.length],
+  () => [activeSessionId.value, session.messages.length, session.tools.length],
   () => {
     void scrollMessagesToEnd();
   },
@@ -114,54 +102,37 @@ onMounted(() => {
   systemThemeQuery = window.matchMedia("(prefers-color-scheme: dark)");
   systemThemeQuery.addEventListener("change", applyTheme);
   applyTheme();
+  client.command("list_sessions");
 });
 
 onBeforeUnmount(() => {
   systemThemeQuery?.removeEventListener("change", applyTheme);
+  disconnect();
 });
-
-function createLocalSession(): LocalChatSession {
-  const state = createInitialSessionState();
-  return {
-    id: `local-${generatedSessionId++}`,
-    title: "New chat",
-    state
-  };
-}
-
-function connect() {
-  status.value = "connecting";
-  client.connect({ ...config });
-}
 
 function disconnect() {
   client.disconnect();
 }
 
-function toggleConnection() {
-  if (isConnected.value) {
-    disconnect();
-  } else {
-    connect();
-  }
-}
-
 function newChat() {
-  const nextSession = createLocalSession();
-  nextSession.state.connected = isConnected.value;
-  nextSession.state.running = session.value.running;
-  nextSession.state.statusText = session.value.statusText;
-  localSessions.unshift(nextSession);
-  activeSessionId.value = nextSession.id;
-
-  if (isConnected.value) {
-    rpcSessionId.value = nextSession.id;
-    client.command("new_session");
-  }
+  activeSessionId.value = null;
+  draftTitle.value = "New chat";
+  hydrateSessionMessages(session, []);
+  session.connected = isConnected.value;
+  session.statusText = "Starting new Pi session";
+  client.command("new_session");
 }
 
 function selectChat(id: string) {
+  const item = piSessions.value.find((candidate) => candidate.id === id);
+  if (!item) return;
+
   activeSessionId.value = id;
+  draftTitle.value = item.title;
+  hydrateSessionMessages(session, []);
+  session.connected = isConnected.value;
+  session.statusText = "Opening session";
+  client.command("open_session", { path: item.path });
 }
 
 function cycleTheme() {
@@ -172,15 +143,14 @@ function cycleTheme() {
 
 function sendPrompt() {
   const message = prompt.value.trim();
-  if (!message || !isConnected.value) return;
+  if (!message) return;
 
-  appendLocalUserMessage(session.value, message);
-  rpcSessionId.value = activeSessionId.value;
-  if (activeChat.value.title === "New chat") {
-    activeChat.value.title = titleFromPrompt(message);
+  appendLocalUserMessage(session, message);
+  if (!activeSessionId.value && draftTitle.value === "New chat") {
+    draftTitle.value = titleFromPrompt(message);
   }
 
-  if (session.value.turnActive) {
+  if (session.turnActive) {
     client.command(queueMode.value, { message });
   } else {
     client.command("prompt", { message });
@@ -191,7 +161,7 @@ function sendPrompt() {
 
 function respondToExtension(request: ExtensionRequest, accepted: boolean) {
   client.command("extension_ui_response", extensionResponsePayload(request, accepted));
-  acknowledgeExtensionRequest(session.value, request.id);
+  acknowledgeExtensionRequest(session, request.id);
   extensionValue.value = "";
 }
 
@@ -213,12 +183,16 @@ function stringParam(key: string): string {
 }
 
 function handleBridgeMessage(message: BridgeMessage) {
-  const targetState = rpcSessionState();
-
   if (message.source === "bridge") {
     if (message.type === "error") {
       status.value = "error";
-      targetState.statusText = message.message ?? "Bridge error";
+      session.statusText = message.message ?? "Bridge error";
+    }
+    if (message.type === "sessions") {
+      piSessions.value = message.sessions;
+    }
+    if (message.type === "session_cancelled") {
+      session.statusText = message.message;
     }
     return;
   }
@@ -228,18 +202,20 @@ function handleBridgeMessage(message: BridgeMessage) {
     status.value = hadError && message.status === "exited" ? "error" : message.status === "running" ? "running" : message.status;
     const connected = message.status !== "exited";
     const statusText = message.status === "exited" ? "Pi exited" : `Pi ${message.status}`;
-    syncConnectionState(connected, hadError && message.status === "exited" ? targetState.statusText : statusText, message.status === "running");
+    session.connected = connected;
+    session.running = message.status === "running";
+    session.statusText = hadError && message.status === "exited" ? session.statusText : statusText;
     return;
   }
 
   if (message.type === "event") {
     prefillEditorPrompt(message.event);
-    reduceSessionEvent(targetState, message.event);
+    reduceSessionEvent(session, message.event);
     return;
   }
 
   if (message.type === "response") {
-    reduceSessionResponse(targetState, message.response);
+    applyPiResponse(message.response);
     return;
   }
 
@@ -250,7 +226,31 @@ function handleBridgeMessage(message: BridgeMessage) {
   }
 
   status.value = "error";
-  targetState.statusText = message.message;
+  session.statusText = message.message;
+}
+
+function applyPiResponse(response: Record<string, unknown>) {
+  if (response.success !== false && response.command === "get_messages") {
+    const data = typeof response.data === "object" && response.data !== null ? (response.data as Record<string, unknown>) : {};
+    if (Array.isArray(data.messages)) {
+      hydrateSessionMessages(session, data.messages);
+      session.connected = isConnected.value;
+    }
+  }
+
+  if (response.success !== false && response.command === "get_state") {
+    const data = typeof response.data === "object" && response.data !== null ? (response.data as Record<string, unknown>) : {};
+    const sessionId = typeof data.sessionId === "string" ? data.sessionId : "";
+    const sessionName = typeof data.sessionName === "string" ? data.sessionName : "";
+    if (sessionId) {
+      activeSessionId.value = sessionId;
+    }
+    if (sessionName && !activePiSession.value) {
+      draftTitle.value = sessionName;
+    }
+  }
+
+  reduceSessionResponse(session, response);
 }
 
 function prefillEditorPrompt(event: Record<string, unknown>) {
@@ -263,18 +263,6 @@ function prefillEditorPrompt(event: Record<string, unknown>) {
   if (text) {
     prompt.value = text;
   }
-}
-
-function syncConnectionState(connected: boolean, statusText: string, running: boolean) {
-  localSessions.forEach((item) => {
-    item.state.connected = connected;
-    item.state.running = running;
-    item.state.statusText = statusText;
-  });
-}
-
-function rpcSessionState(): SessionState {
-  return localSessions.find((item) => item.id === rpcSessionId.value)?.state ?? session.value;
 }
 
 function titleFromPrompt(message: string): string {
@@ -314,9 +302,9 @@ async function scrollMessagesToEnd() {
         </button>
       </div>
 
-      <nav class="session-list" aria-label="Local sessions">
+      <nav class="session-list" aria-label="Pi sessions">
         <button
-          v-for="item in localSessions"
+          v-for="item in piSessions"
           :key="item.id"
           class="session-item"
           :class="{ active: item.id === activeSessionId }"
@@ -327,6 +315,7 @@ async function scrollMessagesToEnd() {
         >
           <span>{{ item.title }}</span>
         </button>
+        <p v-if="piSessions.length === 0" class="session-empty">No saved sessions</p>
       </nav>
 
       <div class="profile-row">
@@ -335,10 +324,6 @@ async function scrollMessagesToEnd() {
           <strong>User</strong>
           <span>{{ session.statusText }}</span>
         </div>
-        <button class="connect-button" type="button" :title="connectionActionLabel" @click="toggleConnection">
-          <component :is="connectionIcon" :size="15" aria-hidden="true" />
-          <span>{{ connectionActionLabel }}</span>
-        </button>
       </div>
     </aside>
 
@@ -347,7 +332,7 @@ async function scrollMessagesToEnd() {
         <button class="icon-button" type="button" aria-label="Toggle sidebar" title="Toggle sidebar" @click="sidebarCollapsed = !sidebarCollapsed">
           <component :is="sidebarIcon" :size="19" aria-hidden="true" />
         </button>
-        <h1>{{ activeChat.title }}</h1>
+        <h1>{{ activeTitle }}</h1>
         <span class="status-pill" :class="status">{{ statusBadge }}</span>
       </header>
 
@@ -355,7 +340,7 @@ async function scrollMessagesToEnd() {
         <div ref="messageScroller" class="conversation-scroll">
           <div v-if="session.messages.length === 0 && session.tools.length === 0" class="welcome">
             <h2>Start a chat with Pi</h2>
-            <p>Connect, then send a prompt.</p>
+            <p>Send a prompt or open a saved session.</p>
           </div>
 
           <div class="message-stack">

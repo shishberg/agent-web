@@ -16,6 +16,7 @@ describe("Pi process helpers", () => {
         model: "claude",
         noSession: true,
         sessionDir: "/tmp/pi",
+        session: "abc123",
         extraArgs: "--debug 'two words'"
       })
     ).toEqual([
@@ -28,6 +29,8 @@ describe("Pi process helpers", () => {
       "--no-session",
       "--session-dir",
       "/tmp/pi",
+      "--session",
+      "abc123",
       "--debug",
       "two words"
     ]);

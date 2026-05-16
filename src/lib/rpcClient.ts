@@ -2,16 +2,21 @@ import type { PiEvent, PiResponse } from "./sessionState";
 
 export type BridgeStatus = "idle" | "connecting" | "connected" | "starting" | "running" | "exited" | "error";
 
-export type PiConnectionConfig = {
-  provider: string;
-  model: string;
-  noSession: boolean;
-  sessionDir: string;
-  extraArgs: string;
+export type PiSessionSummary = {
+  id: string;
+  path: string;
+  cwd?: string;
+  title: string;
+  created?: string;
+  modified?: string;
+  messageCount?: number;
+  firstMessage?: string;
 };
 
 export type BridgeMessage =
   | { source: "bridge"; type: "ready" | "error"; message?: string }
+  | { source: "bridge"; type: "sessions"; sessions: PiSessionSummary[] }
+  | { source: "bridge"; type: "session_cancelled"; command: string; message: string }
   | { source: "pi"; type: "status"; status: "starting" | "running" | "exited"; code?: number | null; signal?: string | null }
   | { source: "pi"; type: "event"; event: PiEvent }
   | { source: "pi"; type: "response"; response: PiResponse }
@@ -27,17 +32,21 @@ export type RpcClientHandlers = {
 
 export class RpcClient {
   private socket: WebSocket | null = null;
+  private readonly pending: Record<string, unknown>[] = [];
 
   constructor(private readonly handlers: RpcClientHandlers) {}
 
-  connect(config: PiConnectionConfig): void {
-    this.disconnect();
+  connect(): void {
+    if (this.socket?.readyState === WebSocket.CONNECTING || this.socket?.readyState === WebSocket.OPEN) {
+      return;
+    }
+
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
     this.socket = new WebSocket(`${protocol}://${window.location.host}/rpc`);
 
     this.socket.addEventListener("open", () => {
       this.handlers.onOpen();
-      this.sendRaw({ type: "connect", config });
+      this.flushPending();
     });
     this.socket.addEventListener("message", (event) => {
       this.handlers.onMessage(JSON.parse(event.data) as BridgeMessage);
@@ -48,19 +57,33 @@ export class RpcClient {
 
   disconnect(): void {
     if (this.socket) {
-      this.sendRaw({ type: "disconnect" });
+      this.pending.length = 0;
+      if (this.socket.readyState === WebSocket.OPEN) {
+        this.socket.send(JSON.stringify({ type: "disconnect" }));
+      }
       this.socket.close();
       this.socket = null;
     }
   }
 
   command(command: string, payload: Record<string, unknown> = {}): void {
+    this.connect();
     this.sendRaw({ type: "command", command, payload });
   }
 
   private sendRaw(message: Record<string, unknown>): void {
     if (this.socket?.readyState === WebSocket.OPEN) {
       this.socket.send(JSON.stringify(message));
+      return;
+    }
+
+    this.pending.push(message);
+  }
+
+  private flushPending(): void {
+    const queued = this.pending.splice(0);
+    for (const message of queued) {
+      this.sendRaw(message);
     }
   }
 }

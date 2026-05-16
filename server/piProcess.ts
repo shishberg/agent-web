@@ -7,6 +7,7 @@ export type PiSessionConfig = {
   model?: string;
   noSession?: boolean;
   sessionDir?: string;
+  session?: string;
   extraArgs?: string;
 };
 
@@ -124,6 +125,9 @@ export function buildPiArgs(config: PiSessionConfig): string[] {
   }
   if (config.sessionDir?.trim()) {
     args.push("--session-dir", config.sessionDir.trim());
+  }
+  if (config.session?.trim()) {
+    args.push("--session", config.session.trim());
   }
   if (config.extraArgs?.trim()) {
     args.push(...splitArgs(config.extraArgs));

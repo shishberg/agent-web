@@ -196,6 +196,19 @@ export function acknowledgeExtensionRequest(state: SessionState, id: string): vo
   state.extensionRequests = state.extensionRequests.filter((request) => request.id !== id);
 }
 
+export function hydrateSessionMessages(state: SessionState, piMessages: unknown[]): SessionState {
+  state.messages = piMessages.map((message, index) => hydrateSessionMessage(message, index));
+  state.tools = [];
+  state.queue = [];
+  state.extensionRequests = [];
+  state.activity = [];
+  state.activeMessageId = null;
+  state.turnActive = false;
+  state.running = false;
+  state.statusText = state.messages.length ? "Session loaded" : "No messages yet";
+  return state;
+}
+
 export function appendLocalUserMessage(state: SessionState, content: string): SessionMessage {
   const message: SessionMessage = {
     id: createId("local-user"),
@@ -207,6 +220,63 @@ export function appendLocalUserMessage(state: SessionState, content: string): Se
   };
   state.messages.push(message);
   return message;
+}
+
+function hydrateSessionMessage(value: unknown, index: number): SessionMessage {
+  const message = objectField(value);
+  const role = roleFromHydratedMessage(message);
+  const extracted = extractHydratedContent(message?.content);
+
+  return {
+    id: stringField(message?.id) || numberField(message?.timestamp) || `pi-message-${index + 1}`,
+    role,
+    content: extracted.content,
+    thinking: extracted.thinking,
+    toolDeltas: extracted.toolDeltas,
+    status: "done"
+  };
+}
+
+function roleFromHydratedMessage(message: Record<string, unknown> | undefined): Role {
+  const role = stringField(message?.role);
+  return role === "user" || role === "system" ? role : "assistant";
+}
+
+function extractHydratedContent(content: unknown): Pick<SessionMessage, "content" | "thinking" | "toolDeltas"> {
+  if (typeof content === "string") {
+    return { content, thinking: "", toolDeltas: [] };
+  }
+
+  if (!Array.isArray(content)) {
+    return { content: "", thinking: "", toolDeltas: [] };
+  }
+
+  const text: string[] = [];
+  const thinking: string[] = [];
+  const toolDeltas: string[] = [];
+
+  for (const part of content) {
+    const item = objectField(part);
+    if (!item) {
+      continue;
+    }
+
+    const textValue = stringField(item.text);
+    if (textValue) {
+      text.push(textValue);
+      continue;
+    }
+
+    const thinkingValue = stringField(item.thinking);
+    if (thinkingValue) {
+      thinking.push(thinkingValue);
+      continue;
+    }
+
+    toolDeltas.push(JSON.stringify(item));
+  }
+
+  return { content: text.join(""), thinking: thinking.join(""), toolDeltas };
 }
 
 function applyMessageUpdate(state: SessionState, event: PiEvent): void {
@@ -404,6 +474,10 @@ function isPiUserMessageEvent(type: string, event: PiEvent): boolean {
 
 function stringField(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function numberField(value: unknown): string {
+  return typeof value === "number" ? String(value) : "";
 }
 
 function objectField(value: unknown): Record<string, unknown> | undefined {

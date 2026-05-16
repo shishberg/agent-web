@@ -188,6 +188,12 @@ pre {
   white-space: nowrap;
 }
 
+.session-empty {
+  margin: 8px 10px;
+  color: #6b7280;
+  font-size: 13px;
+}
+
 :root[data-theme="dark"] .session-item {
   color: #9ca3af;
 }
@@ -203,7 +209,7 @@ pre {
 
 .profile-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 10px;
   border-top: 1px solid #e5e7eb;

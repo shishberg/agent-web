@@ -4,7 +4,7 @@ test("loads the empty chat prompt", async ({ page }) => {
   await page.goto("/");
 
   await expect(page.getByRole("heading", { name: "Start a chat with Pi" })).toBeVisible();
-  await expect(page.getByText("Connect, then send a prompt.")).toBeVisible();
+  await expect(page.getByText("Send a prompt or open a saved session.")).toBeVisible();
 });
 
 test("cycles the theme on the document root", async ({ page }) => {
@@ -33,16 +33,11 @@ test("collapses the sidebar without horizontal document overflow", async ({ page
     .toBe(true);
 });
 
-test("creates a new local session item", async ({ page }) => {
+test("keeps Pi sessions in the sidebar without a user-facing connect action", async ({ page }) => {
   await page.goto("/");
 
-  const sessions = page.getByRole("navigation", { name: "Local sessions" }).getByRole("button", { name: /Chat session:/ });
-  await expect(sessions).toHaveCount(1);
-
-  await page.getByRole("button", { name: "New chat", exact: true }).click();
-
-  await expect(sessions).toHaveCount(2);
-  await expect(sessions.first()).toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("navigation", { name: "Pi sessions" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Connect|Disconnect/ })).toHaveCount(0);
 });
 
 test("grows the prompt for multiline input without a scrollbar for short content", async ({ page }) => {

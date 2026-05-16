@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   appendLocalUserMessage,
   createInitialSessionState,
+  hydrateSessionMessages,
   reduceSessionEvent,
   reduceSessionResponse
 } from "../src/lib/sessionState";
@@ -187,5 +188,45 @@ describe("session state reducer", () => {
 
     expect(state.statusText).toBe("Pi request failed: bad request");
     expect(state.activity[0]).toEqual(expect.objectContaining({ type: "response", summary: "Pi response failed: bad request" }));
+  });
+
+  it("hydrates displayed messages from Pi-owned session messages", () => {
+    const state = createInitialSessionState();
+    appendLocalUserMessage(state, "transient local draft");
+    reduceSessionEvent(state, { type: "tool_execution_start", toolCallId: "tool-1", toolName: "bash" });
+
+    hydrateSessionMessages(state, [
+      { id: "u1", role: "user", content: "Show **markdown**" },
+      {
+        id: "a1",
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "checking files" },
+          { type: "text", text: "# Done\n\nIt worked." },
+          { type: "tool_use", name: "read", input: { path: "package.json" } }
+        ]
+      }
+    ]);
+
+    expect(state.messages).toEqual([
+      expect.objectContaining({
+        id: "u1",
+        role: "user",
+        content: "Show **markdown**",
+        thinking: "",
+        toolDeltas: [],
+        status: "done"
+      }),
+      expect.objectContaining({
+        id: "a1",
+        role: "assistant",
+        content: "# Done\n\nIt worked.",
+        thinking: "checking files",
+        toolDeltas: [JSON.stringify({ type: "tool_use", name: "read", input: { path: "package.json" } })],
+        status: "done"
+      })
+    ]);
+    expect(state.tools).toEqual([]);
+    expect(state.activeMessageId).toBeNull();
   });
 });

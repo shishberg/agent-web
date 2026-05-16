@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
 import { createServer as createViteServer, type ViteDevServer } from "vite";
 import { isAllowedOrigin } from "./origin";
-import { createPiRpcCommand, PiProcess, type PiProcessEvent, type PiSessionConfig } from "./piProcess";
+import { PiSessionBridge, type ClientMessage } from "./piSessionBridge";
 
 export const DEFAULT_PORT = 4177;
 
@@ -43,15 +43,16 @@ const wss = new WebSocketServer({
   verifyClient: ({ origin }: { origin?: string; req: IncomingMessage }) => isAllowedOrigin(origin, host, port)
 });
 wss.on("connection", (socket) => {
-  const pi = new PiProcess();
-
   const send = (message: unknown) => {
     if (socket.readyState === socket.OPEN) {
       socket.send(JSON.stringify(message));
     }
   };
-
-  pi.on("pi-event", (event: PiProcessEvent) => send({ source: "pi", ...event }));
+  const bridge = new PiSessionBridge({
+    cwd: root,
+    sessionDir: process.env.PI_CODING_AGENT_SESSION_DIR,
+    send
+  });
 
   socket.on("message", (raw) => {
     const parsed = parseClientMessage(raw.toString(), socket);
@@ -59,33 +60,16 @@ wss.on("connection", (socket) => {
       return;
     }
 
-    if (parsed.type === "connect") {
-      pi.start(parsed.config ?? {});
-      return;
-    }
-
-    if (parsed.type === "disconnect") {
-      pi.stop();
-      return;
-    }
-
-    if (parsed.type === "command") {
-      pi.send(createPiRpcCommand(parsed.command, parsed.payload));
-    }
+    void bridge.handleClientMessage(parsed);
   });
 
-  socket.on("close", () => pi.stop());
+  socket.on("close", () => bridge.dispose());
   send({ source: "bridge", type: "ready" });
 });
 
 server.listen(port, host, () => {
   console.log(`Pi agent web listening on http://${host}:${port}`);
 });
-
-type ClientMessage =
-  | { type: "connect"; config?: PiSessionConfig }
-  | { type: "disconnect" }
-  | { type: "command"; command: string; payload?: Record<string, unknown> };
 
 function parseClientMessage(raw: string, socket: WebSocket): ClientMessage | null {
   let value: unknown;
@@ -109,10 +93,6 @@ function isClientMessage(value: unknown): value is ClientMessage {
     return false;
   }
 
-  if (value.type === "connect") {
-    return value.config === undefined || isPiSessionConfig(value.config);
-  }
-
   if (value.type === "disconnect") {
     return true;
   }
@@ -126,28 +106,6 @@ function isClientMessage(value: unknown): value is ClientMessage {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isPiSessionConfig(value: unknown): value is PiSessionConfig {
-  if (!isRecord(value)) {
-    return false;
-  }
-
-  return (
-    optionalString(value.provider) &&
-    optionalString(value.model) &&
-    optionalBoolean(value.noSession) &&
-    optionalString(value.sessionDir) &&
-    optionalString(value.extraArgs)
-  );
-}
-
-function optionalString(value: unknown): boolean {
-  return value === undefined || typeof value === "string";
-}
-
-function optionalBoolean(value: unknown): boolean {
-  return value === undefined || typeof value === "boolean";
 }
 
 async function serveStatic(url: string, res: ServerResponse) {
