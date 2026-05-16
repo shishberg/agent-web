@@ -304,7 +304,6 @@ pre {
 }
 
 .status-pill {
-  margin-left: auto;
   border-radius: 999px;
   background: #d1fae5;
   color: #047857;
@@ -312,6 +311,13 @@ pre {
   font-size: 12px;
   font-weight: 750;
   white-space: nowrap;
+}
+
+.status-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
 }
 
 .status-pill.error {
@@ -404,6 +410,37 @@ pre {
   line-height: 1.55;
 }
 
+.loading-state {
+  gap: 10px;
+}
+
+.loading-state p {
+  margin-top: 0;
+}
+
+.loading-spinner {
+  width: 24px;
+  height: 24px;
+  border: 3px solid #d1fae5;
+  border-top-color: #059669;
+  border-radius: 999px;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.error-state h2 {
+  color: #b91c1c;
+}
+
+:root[data-theme="dark"] .error-state h2 {
+  color: #fca5a5;
+}
+
 .message {
   display: flex;
   gap: 10px;
@@ -429,20 +466,54 @@ pre {
 }
 
 .message-body {
+  position: relative;
   min-width: 0;
   max-width: min(80%, 680px);
   border: 1px solid #e5e7eb;
   border-radius: 18px;
   background: #ffffff;
   color: #111827;
-  padding: 10px 14px;
+  padding: 10px 42px 10px 14px;
   box-shadow: 0 1px 1px rgb(17 24 39 / 0.03);
+}
+
+.message-copy-button {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #6b7280;
+  line-height: 1;
+}
+
+.message-copy-button:hover {
+  background: #f3f4f6;
+  color: #111827;
+}
+
+.message-copy-button.failed {
+  color: #dc2626;
 }
 
 .message-user .message-body {
   border-color: #059669;
   border-bottom-right-radius: 6px;
   background: #059669;
+  color: white;
+}
+
+.message-user .message-copy-button {
+  color: rgb(255 255 255 / 0.78);
+}
+
+.message-user .message-copy-button:hover {
+  background: rgb(255 255 255 / 0.16);
   color: white;
 }
 
@@ -455,6 +526,19 @@ pre {
   border-color: #374151;
   background: #1f2937;
   color: #f9fafb;
+}
+
+:root[data-theme="dark"] .message-copy-button {
+  color: #d1d5db;
+}
+
+:root[data-theme="dark"] .message-copy-button:hover {
+  background: #374151;
+  color: #f9fafb;
+}
+
+:root[data-theme="dark"] .message-copy-button.failed {
+  color: #fca5a5;
 }
 
 :root[data-theme="dark"] .message-user .message-body {
@@ -822,6 +906,40 @@ pre {
 .modal select,
 .modal textarea {
   margin: 14px 0;
+}
+
+.modal-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.modal-heading h2 {
+  min-width: 0;
+  flex: 1;
+}
+
+.metadata-modal {
+  width: min(520px, 100%);
+}
+
+.metadata-list {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px 16px;
+  margin: 16px 0 0;
+  font-size: 13px;
+}
+
+.metadata-list dt {
+  color: #6b7280;
+  font-weight: 700;
+}
+
+.metadata-list dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 720px) {

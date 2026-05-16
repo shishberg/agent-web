@@ -177,7 +177,7 @@ describe("session state reducer", () => {
       data: { sessionId: "abc", provider: "anthropic", model: "claude", status: "ready" }
     });
 
-    expect(state.statusText).toBe("Pi state: session abc / anthropic/claude / ready");
+    expect(state.statusText).toBe("Pi ready (anthropic/claude)");
     expect(state.activity[0]).toEqual(expect.objectContaining({ type: "response", summary: "Pi response received" }));
 
     reduceSessionResponse(state, {

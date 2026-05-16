@@ -414,17 +414,26 @@ function summarizeResult(result: unknown): string {
   const model = stringField(object.model);
   const provider = stringField(object.provider);
   const status = stringField(object.status) || stringField(object.state);
-  const parts = [
-    sessionId ? `session ${sessionId}` : "",
-    provider || model ? [provider, model].filter(Boolean).join("/") : "",
-    status
-  ].filter(Boolean);
+  const runtime = [provider, model].filter(Boolean).join("/");
+  const readableStatus = status ? status.replaceAll("_", " ") : "";
 
-  if (parts.length) {
-    return `Pi state: ${parts.join(" / ")}`;
+  if (readableStatus && runtime) {
+    return `Pi ${readableStatus} (${runtime})`;
   }
 
-  return `Pi state: ${Object.keys(object).slice(0, 5).join(", ")}`;
+  if (readableStatus) {
+    return `Pi ${readableStatus}`;
+  }
+
+  if (runtime) {
+    return `Pi configured (${runtime})`;
+  }
+
+  if (sessionId) {
+    return "Session ready";
+  }
+
+  return "Pi request completed";
 }
 
 function responseErrorText(error: unknown): string {

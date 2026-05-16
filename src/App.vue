@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { Moon, Monitor, PanelLeftClose, PanelLeftOpen, Plus, Sun } from "@lucide/vue";
+import { Info, Moon, Monitor, PanelLeftClose, PanelLeftOpen, Plus, Sun, X } from "@lucide/vue";
 import Conversation from "./components/ai-elements/Conversation.vue";
 import Message from "./components/ai-elements/Message.vue";
 import PromptInput from "./components/ai-elements/PromptInput.vue";
@@ -32,6 +32,10 @@ const extensionValue = ref("");
 const sidebarCollapsed = ref(false);
 const themePreference = ref<ThemePreference>(readThemePreference());
 const messageScroller = ref<HTMLElement | null>(null);
+const isSessionLoading = ref(false);
+const metadataOpen = ref(false);
+const metadataDialog = ref<HTMLElement | null>(null);
+const sessionDetailsButton = ref<HTMLButtonElement | null>(null);
 
 const client = new RpcClient({
   onOpen: () => {
@@ -41,12 +45,14 @@ const client = new RpcClient({
   },
   onClose: () => {
     status.value = "exited";
+    isSessionLoading.value = false;
     session.connected = false;
     session.running = false;
     session.statusText = "Connection closed";
   },
   onError: (message) => {
     status.value = "error";
+    isSessionLoading.value = false;
     session.statusText = message;
   },
   onMessage: handleBridgeMessage
@@ -75,6 +81,33 @@ const statusBadge = computed(() => (session.running ? "Running" : connectionLabe
 const themeIcon = computed(() => ({ light: Sun, dark: Moon, system: Monitor })[themePreference.value]);
 const sidebarIcon = computed(() => (sidebarCollapsed.value ? PanelLeftOpen : PanelLeftClose));
 const themeTitle = computed(() => `Theme: ${themePreference.value}`);
+const sessionError = computed(() => (session.statusText.startsWith("Pi request failed") ? session.statusText : ""));
+const sessionMetadataRows = computed(() => {
+  const rows = [
+    { label: "Connection", value: connectionLabel.value },
+    { label: "Session", value: activeTitle.value },
+    { label: "State", value: session.statusText },
+    { label: "Messages", value: String(session.messages.length) }
+  ];
+
+  if (activeSessionId.value) {
+    rows.push({ label: "Session ID", value: activeSessionId.value });
+  }
+  if (activePiSession.value?.path) {
+    rows.push({ label: "File", value: activePiSession.value.path });
+  }
+  if (activePiSession.value?.modified) {
+    rows.push({ label: "Modified", value: activePiSession.value.modified });
+  }
+  if (session.tools.length) {
+    rows.push({ label: "Tool runs", value: String(session.tools.length) });
+  }
+  if (session.queue.length) {
+    rows.push({ label: "Queued", value: String(session.queue.length) });
+  }
+
+  return rows;
+});
 
 watch(pendingExtension, (request) => {
   if (!request) {
@@ -98,6 +131,13 @@ watch(themePreference, (value) => {
   applyTheme();
 });
 
+watch(metadataOpen, async (open) => {
+  if (!open) return;
+
+  await nextTick();
+  metadataDialog.value?.focus();
+});
+
 onMounted(() => {
   systemThemeQuery = window.matchMedia("(prefers-color-scheme: dark)");
   systemThemeQuery.addEventListener("change", applyTheme);
@@ -115,6 +155,7 @@ function disconnect() {
 }
 
 function newChat() {
+  isSessionLoading.value = false;
   activeSessionId.value = null;
   draftTitle.value = "New chat";
   hydrateSessionMessages(session, []);
@@ -129,10 +170,51 @@ function selectChat(id: string) {
 
   activeSessionId.value = id;
   draftTitle.value = item.title;
+  isSessionLoading.value = true;
   hydrateSessionMessages(session, []);
   session.connected = isConnected.value;
   session.statusText = "Opening session";
   client.command("open_session", { path: item.path });
+}
+
+function openMetadata() {
+  metadataOpen.value = true;
+}
+
+async function closeMetadata() {
+  metadataOpen.value = false;
+  await nextTick();
+  sessionDetailsButton.value?.focus();
+}
+
+function trapMetadataFocus(event: KeyboardEvent) {
+  const dialog = metadataDialog.value;
+  if (!dialog) return;
+
+  const focusable = Array.from(
+    dialog.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    )
+  ).filter((element) => !element.hasAttribute("disabled") && element.getAttribute("aria-hidden") !== "true");
+
+  if (!focusable.length) {
+    event.preventDefault();
+    dialog.focus();
+    return;
+  }
+
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (document.activeElement === dialog) {
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus();
+  } else if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
 }
 
 function cycleTheme() {
@@ -186,12 +268,14 @@ function handleBridgeMessage(message: BridgeMessage) {
   if (message.source === "bridge") {
     if (message.type === "error") {
       status.value = "error";
+      isSessionLoading.value = false;
       session.statusText = message.message ?? "Bridge error";
     }
     if (message.type === "sessions") {
       piSessions.value = message.sessions;
     }
     if (message.type === "session_cancelled") {
+      isSessionLoading.value = false;
       session.statusText = message.message;
     }
     return;
@@ -226,10 +310,15 @@ function handleBridgeMessage(message: BridgeMessage) {
   }
 
   status.value = "error";
+  isSessionLoading.value = false;
   session.statusText = message.message;
 }
 
 function applyPiResponse(response: Record<string, unknown>) {
+  if (response.command === "get_messages" || response.success === false) {
+    isSessionLoading.value = false;
+  }
+
   if (response.success !== false && response.command === "get_messages") {
     const data = typeof response.data === "object" && response.data !== null ? (response.data as Record<string, unknown>) : {};
     if (Array.isArray(data.messages)) {
@@ -322,7 +411,6 @@ async function scrollMessagesToEnd() {
         <div class="avatar">U</div>
         <div class="profile-copy">
           <strong>User</strong>
-          <span>{{ session.statusText }}</span>
         </div>
       </div>
     </aside>
@@ -333,12 +421,28 @@ async function scrollMessagesToEnd() {
           <component :is="sidebarIcon" :size="19" aria-hidden="true" />
         </button>
         <h1>{{ activeTitle }}</h1>
-        <span class="status-pill" :class="status">{{ statusBadge }}</span>
+        <div class="status-actions">
+          <span class="status-pill" :class="status">{{ statusBadge }}</span>
+          <button ref="sessionDetailsButton" class="icon-button" type="button" aria-label="Session details" title="Session details" @click="openMetadata">
+            <Info :size="18" aria-hidden="true" />
+          </button>
+        </div>
       </header>
 
       <Conversation>
         <div ref="messageScroller" class="conversation-scroll">
-          <div v-if="session.messages.length === 0 && session.tools.length === 0" class="welcome">
+          <div v-if="isSessionLoading" class="welcome loading-state" role="status" aria-live="polite">
+            <span class="loading-spinner" aria-hidden="true"></span>
+            <h2>Loading session</h2>
+            <p>Opening saved chat...</p>
+          </div>
+
+          <div v-else-if="sessionError" class="welcome error-state" role="alert">
+            <h2>Could not load session</h2>
+            <p>{{ sessionError }}</p>
+          </div>
+
+          <div v-else-if="session.messages.length === 0 && session.tools.length === 0" class="welcome">
             <h2>Start a chat with Pi</h2>
             <p>Send a prompt or open a saved session.</p>
           </div>
@@ -349,6 +453,7 @@ async function scrollMessagesToEnd() {
               :key="message.id"
               :role="message.role"
               :streaming="message.status === 'streaming'"
+              :copy-text="message.content"
             >
               <details v-if="message.thinking" class="thinking">
                 <summary>Thinking</summary>
@@ -390,6 +495,32 @@ async function scrollMessagesToEnd() {
         </div>
       </Conversation>
     </section>
+
+    <div v-if="metadataOpen" class="modal-backdrop" @click.self="closeMetadata">
+      <section
+        ref="metadataDialog"
+        class="modal metadata-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="metadata-title"
+        tabindex="-1"
+        @keydown.esc.stop="closeMetadata"
+        @keydown.tab="trapMetadataFocus"
+      >
+        <div class="modal-heading">
+          <h2 id="metadata-title">Session details</h2>
+          <button class="icon-button" type="button" aria-label="Close session details" title="Close" @click="closeMetadata">
+            <X :size="18" aria-hidden="true" />
+          </button>
+        </div>
+        <dl class="metadata-list">
+          <template v-for="row in sessionMetadataRows" :key="row.label">
+            <dt>{{ row.label }}</dt>
+            <dd>{{ row.value }}</dd>
+          </template>
+        </dl>
+      </section>
+    </div>
 
     <div v-if="pendingExtension" class="modal-backdrop">
       <section class="modal">
