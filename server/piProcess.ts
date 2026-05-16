@@ -22,7 +22,10 @@ export type PiProcessEvent =
 
 export class PiProcess extends EventEmitter {
   private child: ChildProcessWithoutNullStreams | null = null;
+  private childReady = false;
+  private stopping = false;
   private readonly framer = new JsonlFramer();
+  private readonly pendingWrites: Record<string, unknown>[] = [];
 
   start(config: PiSessionConfig): void {
     if (this.child) {
@@ -32,6 +35,8 @@ export class PiProcess extends EventEmitter {
     const command = process.env.PI_COMMAND?.trim() || "pi";
     const args = buildPiArgs(config);
     this.emitEvent({ type: "status", status: "starting" });
+    this.childReady = false;
+    this.stopping = false;
 
     this.child = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
@@ -59,14 +64,19 @@ export class PiProcess extends EventEmitter {
     });
 
     child.on("spawn", () => {
+      if (this.stopping) {
+        return;
+      }
+      this.childReady = true;
       this.emitEvent({ type: "status", status: "running" });
+      this.flushPendingWrites();
     });
 
     child.on("error", (error) => {
       settled = true;
+      this.clearChildState();
       this.emitEvent({ type: "spawn_error", message: error.message });
       this.emitEvent({ type: "status", status: "exited", code: null, signal: null });
-      this.child = null;
     });
 
     child.on("exit", (code, signal) => {
@@ -77,29 +87,64 @@ export class PiProcess extends EventEmitter {
       for (const leftover of this.framer.flush()) {
         this.emitEvent({ type: "framing_error", message: `Pi stdout ended with incomplete JSONL frame: ${leftover}` });
       }
+      this.clearChildState();
       this.emitEvent({ type: "status", status: "exited", code, signal });
-      this.child = null;
     });
   }
 
   send(value: Record<string, unknown>): void {
-    if (!this.child || !this.child.stdin.writable) {
+    if (!this.child || this.stopping) {
       this.emitEvent({ type: "write_error", message: "Pi process is not running." });
       return;
     }
 
-    this.child.stdin.write(`${JSON.stringify(value)}\n`);
+    if (!this.childReady) {
+      this.pendingWrites.push(value);
+      return;
+    }
+
+    this.write(value);
   }
 
   stop(): void {
     if (!this.child) {
       return;
     }
+    this.stopping = true;
+    this.childReady = false;
+    this.pendingWrites.length = 0;
     this.child.kill("SIGTERM");
   }
 
   private emitEvent(event: PiProcessEvent): void {
     this.emit("pi-event", event);
+  }
+
+  private flushPendingWrites(): void {
+    const queued = this.pendingWrites.splice(0);
+    for (const value of queued) {
+      this.write(value);
+    }
+  }
+
+  private write(value: Record<string, unknown>): void {
+    if (!this.child || !this.child.stdin.writable) {
+      this.emitEvent({ type: "write_error", message: "Pi process is not running." });
+      return;
+    }
+
+    try {
+      this.child.stdin.write(`${JSON.stringify(value)}\n`);
+    } catch (error) {
+      this.emitEvent({ type: "write_error", message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  private clearChildState(): void {
+    this.child = null;
+    this.childReady = false;
+    this.stopping = false;
+    this.pendingWrites.length = 0;
   }
 }
 

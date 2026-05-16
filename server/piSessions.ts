@@ -13,7 +13,9 @@ export type PiSessionSummary = {
 
 export async function listPiSessions(cwd: string, sessionDir?: string): Promise<PiSessionSummary[]> {
   const sessions = await SessionManager.list(cwd, sessionDir);
-  return sessions
+  const visibleSessions = sessions.length > 0 || sessionDir?.trim() ? sessions : await SessionManager.listAll();
+
+  return visibleSessions
     .map(toSummary)
     .sort((left, right) => Date.parse(right.modified) - Date.parse(left.modified));
 }

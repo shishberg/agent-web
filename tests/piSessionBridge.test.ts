@@ -249,4 +249,25 @@ describe("Pi session bridge", () => {
 
     expect(process.stopped).toBe(true);
   });
+
+  it("starts a fresh runtime after Pi exits", async () => {
+    const processes = [new FakePiProcess(), new FakePiProcess()];
+    let nextProcess = 0;
+    bridge = new PiSessionBridge({
+      cwd: "/repo",
+      sessionDir: "/tmp/pi",
+      createPiProcess: () => processes[nextProcess++],
+      listSessions,
+      send: (message) => sent.push(message)
+    });
+
+    await bridge.handleClientMessage({ type: "command", command: "prompt", payload: { message: "first" } });
+    processes[0].emit("pi-event", { type: "status", status: "exited", code: 0, signal: null });
+    await bridge.handleClientMessage({ type: "command", command: "prompt", payload: { message: "second" } });
+
+    expect(processes[0].starts).toEqual([{ sessionDir: "/tmp/pi" }]);
+    expect(processes[0].sent).toEqual([{ type: "prompt", message: "first" }]);
+    expect(processes[1].starts).toEqual([{ sessionDir: "/tmp/pi" }]);
+    expect(processes[1].sent).toEqual([{ type: "prompt", message: "second" }]);
+  });
 });

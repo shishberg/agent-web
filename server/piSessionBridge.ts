@@ -108,6 +108,11 @@ export class PiSessionBridge {
 
     this.options.send({ source: "pi", ...event });
 
+    if (event.type === "status" && event.status === "exited") {
+      this.pi = null;
+      return;
+    }
+
     if (event.type === "event" && isRecord(event.event) && event.event.type === "agent_end") {
       this.hydrateActiveSession();
       await this.refreshSessions();

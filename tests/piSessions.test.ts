@@ -1,14 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const list = vi.fn();
+const listAll = vi.fn();
 
 vi.mock("@earendil-works/pi-coding-agent", () => ({
-  SessionManager: { list }
+  SessionManager: { list, listAll }
 }));
 
 describe("Pi session catalog", () => {
   beforeEach(() => {
     list.mockReset();
+    listAll.mockReset();
   });
 
   it("lists Pi-owned sessions for the project cwd", async () => {
@@ -82,6 +84,42 @@ describe("Pi session catalog", () => {
       })
     ]);
     expect(list).toHaveBeenCalledWith("/repo", undefined);
+    expect(listAll).not.toHaveBeenCalled();
+  });
+
+  it("falls back to all Pi-owned sessions when the current project has none", async () => {
+    list.mockResolvedValue([]);
+    listAll.mockResolvedValue([
+      {
+        path: "/tmp/pi/session-other.jsonl",
+        id: "other",
+        cwd: "/other-repo",
+        created: new Date("2026-01-01T00:00:00.000Z"),
+        modified: new Date("2026-01-01T01:00:00.000Z"),
+        messageCount: 2,
+        firstMessage: "other project",
+        allMessagesText: "other project"
+      }
+    ]);
+
+    await expect(listPiSessions("/repo")).resolves.toEqual([
+      expect.objectContaining({
+        id: "other",
+        path: "/tmp/pi/session-other.jsonl",
+        cwd: "/other-repo",
+        title: "other project"
+      })
+    ]);
+    expect(list).toHaveBeenCalledWith("/repo", undefined);
+    expect(listAll).toHaveBeenCalledWith();
+  });
+
+  it("does not fall back outside an explicit Pi session directory", async () => {
+    list.mockResolvedValue([]);
+
+    await expect(listPiSessions("/repo", "/tmp/pi")).resolves.toEqual([]);
+    expect(list).toHaveBeenCalledWith("/repo", "/tmp/pi");
+    expect(listAll).not.toHaveBeenCalled();
   });
 });
 
