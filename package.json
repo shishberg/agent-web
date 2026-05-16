@@ -1,0 +1,31 @@
+{
+  "name": "pi-agent-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx server/index.ts",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "tsx server/index.ts --production",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "@vitejs/plugin-vue": "^5.2.4",
+    "vite": "^5.4.19",
+    "vue": "^3.5.13",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.18",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3",
+    "vitest": "^2.1.9",
+    "vue-tsc": "^2.2.10"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
