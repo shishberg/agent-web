@@ -94,6 +94,10 @@ export function reduceSessionEvent(state: SessionState, event: PiEvent): Session
   const type = String(event.type ?? "unknown");
   addActivity(state, event, summarizeEvent(event));
 
+  if (isPiUserMessageEvent(type, event)) {
+    return state;
+  }
+
   switch (type) {
     case "agent_start":
       state.running = true;
@@ -392,6 +396,10 @@ function roleFromEvent(event: PiEvent): Role {
   const message = objectField(event.message);
   const role = stringField(event.role) || stringField(message?.role);
   return role === "user" || role === "system" ? role : "assistant";
+}
+
+function isPiUserMessageEvent(type: string, event: PiEvent): boolean {
+  return type.startsWith("message_") && roleFromEvent(event) === "user";
 }
 
 function stringField(value: unknown): string {

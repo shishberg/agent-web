@@ -23,6 +23,25 @@ describe("session state reducer", () => {
     ]);
   });
 
+  it("ignores Pi user message echoes after adding the local prompt", () => {
+    const state = createInitialSessionState();
+
+    appendLocalUserMessage(state, "Please inspect the app");
+    reduceSessionEvent(state, {
+      type: "message_start",
+      messageId: "pi-user-1",
+      message: { role: "user", content: "Please inspect the app" }
+    });
+    reduceSessionEvent(state, {
+      type: "message_end",
+      messageId: "pi-user-1",
+      message: { role: "user", content: "Please inspect the app" }
+    });
+
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]).toEqual(expect.objectContaining({ role: "user", content: "Please inspect the app" }));
+  });
+
   it("builds assistant text from streaming text deltas", () => {
     const state = createInitialSessionState();
     reduceSessionEvent(state, { type: "message_start", messageId: "m1", role: "assistant" });

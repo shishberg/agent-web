@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { Moon, Monitor, PanelLeftClose, PanelLeftOpen, Plug, Plus, Sun, Unplug } from "@lucide/vue";
 import Conversation from "./components/ai-elements/Conversation.vue";
 import Message from "./components/ai-elements/Message.vue";
 import PromptInput from "./components/ai-elements/PromptInput.vue";
+import { renderMarkdown } from "./lib/markdown";
 import { RpcClient, type BridgeMessage, type BridgeStatus, type PiConnectionConfig } from "./lib/rpcClient";
 import {
   acknowledgeExtensionRequest,
@@ -81,7 +83,9 @@ const connectionLabel = computed(() => {
 });
 const connectionActionLabel = computed(() => (isConnected.value ? "Disconnect" : "Connect"));
 const statusBadge = computed(() => (session.value.running ? "Running" : connectionLabel.value));
-const themeIcon = computed(() => ({ light: "☼", dark: "◐", system: "▣" })[themePreference.value]);
+const themeIcon = computed(() => ({ light: Sun, dark: Moon, system: Monitor })[themePreference.value]);
+const sidebarIcon = computed(() => (sidebarCollapsed.value ? PanelLeftOpen : PanelLeftClose));
+const connectionIcon = computed(() => (isConnected.value ? Unplug : Plug));
 const themeTitle = computed(() => `Theme: ${themePreference.value}`);
 
 watch(pendingExtension, (request) => {
@@ -278,13 +282,6 @@ function titleFromPrompt(message: string): string {
   return title.length > 34 ? `${title.slice(0, 34)}...` : title || "New chat";
 }
 
-function formatValue(value: unknown): string {
-  if (value === undefined || value === null || value === "") {
-    return "";
-  }
-  return typeof value === "string" ? value : JSON.stringify(value, null, 2);
-}
-
 function readThemePreference(): ThemePreference {
   const stored = localStorage.getItem("agent-web-theme");
   return stored === "light" || stored === "dark" || stored === "system" ? stored : "system";
@@ -309,8 +306,12 @@ async function scrollMessagesToEnd() {
   <main class="app-shell" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
     <aside class="sidebar" aria-label="Sessions">
       <div class="sidebar-header">
-        <button class="icon-button" type="button" :title="themeTitle" @click="cycleTheme">{{ themeIcon }}</button>
-        <button class="icon-button" type="button" title="New chat" @click="newChat">+</button>
+        <button class="icon-button" type="button" :aria-label="themeTitle" :title="themeTitle" @click="cycleTheme">
+          <component :is="themeIcon" :size="18" aria-hidden="true" />
+        </button>
+        <button class="icon-button" type="button" aria-label="New chat" title="New chat" @click="newChat">
+          <Plus :size="19" aria-hidden="true" />
+        </button>
       </div>
 
       <nav class="session-list" aria-label="Local sessions">
@@ -332,13 +333,18 @@ async function scrollMessagesToEnd() {
           <strong>User</strong>
           <span>{{ session.statusText }}</span>
         </div>
-        <button class="connect-button" type="button" @click="toggleConnection">{{ connectionActionLabel }}</button>
+        <button class="connect-button" type="button" :title="connectionActionLabel" @click="toggleConnection">
+          <component :is="connectionIcon" :size="15" aria-hidden="true" />
+          <span>{{ connectionActionLabel }}</span>
+        </button>
       </div>
     </aside>
 
     <section class="main-chat">
       <header class="chat-header">
-        <button class="icon-button" type="button" title="Toggle sidebar" @click="sidebarCollapsed = !sidebarCollapsed">☰</button>
+        <button class="icon-button" type="button" aria-label="Toggle sidebar" title="Toggle sidebar" @click="sidebarCollapsed = !sidebarCollapsed">
+          <component :is="sidebarIcon" :size="19" aria-hidden="true" />
+        </button>
         <h1>{{ activeChat.title }}</h1>
         <span class="status-pill" :class="status">{{ statusBadge }}</span>
       </header>
@@ -347,7 +353,7 @@ async function scrollMessagesToEnd() {
         <div ref="messageScroller" class="conversation-scroll">
           <div v-if="session.messages.length === 0 && session.tools.length === 0" class="welcome">
             <h2>Start a chat with Pi</h2>
-            <p>Connect, then send a prompt. Tool activity and extension requests stay inline with the conversation.</p>
+            <p>Connect, then send a prompt.</p>
           </div>
 
           <div class="message-stack">
@@ -361,22 +367,15 @@ async function scrollMessagesToEnd() {
                 <summary>Thinking</summary>
                 <pre>{{ message.thinking }}</pre>
               </details>
-              <p>{{ message.content || "..." }}</p>
-              <details v-for="delta in message.toolDeltas" :key="delta" class="inline-activity">
-                <summary>Assistant activity</summary>
-                <pre>{{ delta }}</pre>
-              </details>
+              <div class="message-markdown" v-html="renderMarkdown(message.content || '...')"></div>
             </Message>
 
-            <details v-for="tool in session.tools" :key="tool.id" class="inline-activity tool-row" :class="tool.status">
-              <summary>
+            <div v-if="session.tools.length" class="activity-list" aria-label="Tool activity">
+              <div v-for="tool in session.tools" :key="tool.id" class="tool-row" :class="tool.status">
                 <span class="activity-name">{{ tool.name }}</span>
                 <span>{{ tool.status }}</span>
-              </summary>
-              <pre v-if="formatValue(tool.input)">{{ formatValue(tool.input) }}</pre>
-              <pre v-if="tool.log.length">{{ tool.log.join('\n') }}</pre>
-              <pre v-if="formatValue(tool.output)">{{ formatValue(tool.output) }}</pre>
-            </details>
+              </div>
+            </div>
 
             <details v-if="session.queue.length" class="inline-activity">
               <summary>{{ session.queue.length }} queued command{{ session.queue.length === 1 ? "" : "s" }}</summary>
