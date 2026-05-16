@@ -321,6 +321,8 @@ async function scrollMessagesToEnd() {
           class="session-item"
           :class="{ active: item.id === activeSessionId }"
           type="button"
+          :aria-label="`Chat session: ${item.title}`"
+          :aria-current="item.id === activeSessionId ? 'page' : undefined"
           @click="selectChat(item.id)"
         >
           <span>{{ item.title }}</span>
@@ -408,13 +410,14 @@ async function scrollMessagesToEnd() {
       <section class="modal">
         <h2>{{ extensionTitle }}</h2>
         <p v-if="extensionMessage">{{ extensionMessage }}</p>
-        <select v-if="pendingExtension.method === 'select'" v-model="extensionValue">
+        <select v-if="pendingExtension.method === 'select'" v-model="extensionValue" aria-label="Extension selection">
           <option v-for="option in extensionOptions" :key="option" :value="option">{{ option }}</option>
         </select>
         <textarea
           v-else-if="extensionUsesEditor"
           v-model="extensionValue"
           :placeholder="stringParam('placeholder')"
+          aria-label="Extension response"
           rows="6"
         />
         <div class="button-row">

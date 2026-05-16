@@ -8,6 +8,7 @@ The browser connects to a local Node bridge at `/rpc`. The bridge starts `pi --m
 
 ```sh
 npm install
+npx playwright install chromium
 ```
 
 ## Run
@@ -24,6 +25,7 @@ The server binds to `127.0.0.1` by default because it can start a local process.
 
 ```sh
 npm test
+npm run test:e2e
 npm run typecheck
 npm run build
 npm run preview

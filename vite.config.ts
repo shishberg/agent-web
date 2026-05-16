@@ -1,5 +1,5 @@
 import vue from "@vitejs/plugin-vue";
-import { defineConfig } from "vite";
+import { configDefaults, defineConfig } from "vitest/config";
 
 const port = Number(process.env.PORT ?? 4177);
 
@@ -11,5 +11,8 @@ export default defineConfig({
   },
   build: {
     outDir: "dist/client"
+  },
+  test: {
+    exclude: [...configDefaults.exclude, "tests/e2e/**"]
   }
 });

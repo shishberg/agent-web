@@ -45,7 +45,15 @@ async function resizeTextarea() {
 
 <template>
   <form class="prompt-input" @submit.prevent="emit('submit')">
-    <textarea ref="textarea" v-model="model" :disabled="disabled" :placeholder="placeholder" rows="1" @keydown="onKeydown" />
+    <textarea
+      ref="textarea"
+      v-model="model"
+      :disabled="disabled"
+      :placeholder="placeholder"
+      aria-label="Message prompt"
+      rows="1"
+      @keydown="onKeydown"
+    />
     <button type="submit" :disabled="sendDisabled || disabled || !model.trim()" aria-label="Send" title="Send">
       <Send :size="18" aria-hidden="true" />
     </button>
