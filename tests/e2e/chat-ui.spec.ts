@@ -112,8 +112,12 @@ test("shows saved-session loading, metadata, and message copy controls", async (
         success: true,
         data: {
           sessionId: "019e30bb-2c07-7633-97cf-47c7c8f8b114",
-          provider: "anthropic",
-          model: "claude",
+          provider: { id: "019e30bb-2c07-7633-97cf-47c7c8f8b115", name: "Anthropic" },
+          model: {
+            id: "019e30bb-2c07-7633-97cf-47c7c8f8b116",
+            name: "Claude Sonnet",
+            api: { id: "019e30bb-2c07-7633-97cf-47c7c8f8b117", name: "Anthropic API" }
+          },
           status: "ready"
         }
       }
@@ -128,6 +132,10 @@ test("shows saved-session loading, metadata, and message copy controls", async (
   const detailsDialog = page.getByRole("dialog", { name: "Session details" });
   await expect(detailsDialog).toBeVisible();
   await expect(detailsDialog).toBeFocused();
+  await expect(detailsDialog.getByText("Provider")).toBeVisible();
+  await expect(detailsDialog.getByText("Anthropic", { exact: true })).toBeVisible();
+  await expect(detailsDialog.getByText("Model")).toBeVisible();
+  await expect(detailsDialog.getByText("Claude Sonnet", { exact: true })).toBeVisible();
   await expect(page.getByText("019e30bb-2c07-7633-97cf-47c7c8f8b114")).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(detailsDialog).toBeHidden();
@@ -194,6 +202,7 @@ test("message copy button reports clipboard failure", async ({ page }) => {
         }
       }
     });
+    document.execCommand = () => false;
   });
 
   let wsRoute: { send: (message: string) => void } | undefined;

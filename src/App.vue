@@ -18,6 +18,10 @@ import {
 } from "./lib/sessionState";
 
 type ThemePreference = "light" | "dark" | "system";
+type SessionRuntimeMetadata = {
+  provider: string;
+  model: string;
+};
 
 let systemThemeQuery: MediaQueryList | null = null;
 const piSessions = ref<PiSessionSummary[]>([]);
@@ -36,6 +40,7 @@ const isSessionLoading = ref(false);
 const metadataOpen = ref(false);
 const metadataDialog = ref<HTMLElement | null>(null);
 const sessionDetailsButton = ref<HTMLButtonElement | null>(null);
+const sessionRuntime = reactive<SessionRuntimeMetadata>({ provider: "", model: "" });
 
 const client = new RpcClient({
   onOpen: () => {
@@ -92,6 +97,12 @@ const sessionMetadataRows = computed(() => {
 
   if (activeSessionId.value) {
     rows.push({ label: "Session ID", value: activeSessionId.value });
+  }
+  if (sessionRuntime.provider) {
+    rows.push({ label: "Provider", value: sessionRuntime.provider });
+  }
+  if (sessionRuntime.model) {
+    rows.push({ label: "Model", value: sessionRuntime.model });
   }
   if (activePiSession.value?.path) {
     rows.push({ label: "File", value: activePiSession.value.path });
@@ -158,6 +169,7 @@ function newChat() {
   isSessionLoading.value = false;
   activeSessionId.value = null;
   draftTitle.value = "New chat";
+  clearSessionRuntime();
   hydrateSessionMessages(session, []);
   session.connected = isConnected.value;
   session.statusText = "Starting new Pi session";
@@ -171,6 +183,7 @@ function selectChat(id: string) {
   activeSessionId.value = id;
   draftTitle.value = item.title;
   isSessionLoading.value = true;
+  clearSessionRuntime();
   hydrateSessionMessages(session, []);
   session.connected = isConnected.value;
   session.statusText = "Opening session";
@@ -337,9 +350,55 @@ function applyPiResponse(response: Record<string, unknown>) {
     if (sessionName && !activePiSession.value) {
       draftTitle.value = sessionName;
     }
+    applySessionRuntime(data);
   }
 
   reduceSessionResponse(session, response);
+}
+
+function clearSessionRuntime() {
+  sessionRuntime.provider = "";
+  sessionRuntime.model = "";
+}
+
+function applySessionRuntime(data: Record<string, unknown>) {
+  const model = objectField(data.model);
+  const modelApi = objectField(model?.api);
+  const provider = firstDisplayValue(data.provider, model?.provider, model?.api, modelApi?.provider);
+  const modelName = firstDisplayValue(data.model, model?.name, model?.id);
+
+  sessionRuntime.provider = provider;
+  sessionRuntime.model = modelName;
+}
+
+function firstDisplayValue(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === "string") {
+      const normalized = value.trim();
+      if (normalized && !looksLikeUuid(normalized)) {
+        return normalized;
+      }
+      continue;
+    }
+
+    const object = objectField(value);
+    if (object) {
+      const nested = firstDisplayValue(object.name, object.displayName, object.label, object.id);
+      if (nested) {
+        return nested;
+      }
+    }
+  }
+
+  return "";
+}
+
+function looksLikeUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function objectField(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 }
 
 function prefillEditorPrompt(event: Record<string, unknown>) {

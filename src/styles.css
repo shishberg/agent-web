@@ -497,8 +497,12 @@ pre {
   color: #111827;
 }
 
+.message-copy-button.copied {
+  color: #059669;
+}
+
 .message-copy-button.failed {
-  color: #dc2626;
+  color: #6b7280;
 }
 
 .message-user .message-body {
@@ -537,8 +541,12 @@ pre {
   color: #f9fafb;
 }
 
+:root[data-theme="dark"] .message-copy-button.copied {
+  color: #34d399;
+}
+
 :root[data-theme="dark"] .message-copy-button.failed {
-  color: #fca5a5;
+  color: #d1d5db;
 }
 
 :root[data-theme="dark"] .message-user .message-body {

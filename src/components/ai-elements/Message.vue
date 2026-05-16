@@ -59,7 +59,7 @@ async function copyMessage() {
       <button
         v-if="canCopy"
         class="message-copy-button"
-        :class="{ failed: copyStatus === 'failed' }"
+        :class="{ copied: copyStatus === 'copied', failed: copyStatus === 'failed' }"
         type="button"
         :aria-label="copyLabel"
         :title="copyTitle"
