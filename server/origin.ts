@@ -12,7 +12,7 @@ export function isAllowedOrigin(origin: string | undefined, bindHost: string, po
 }
 
 export function allowedOrigins(bindHost: string, port: number): Set<string> {
-  const hosts = new Set([normalizeHostname(bindHost)]);
+  const hosts = new Set([normalizeHostname(bindHost), "kodama.local"]);
 
   if (isLoopbackHost(bindHost)) {
     hosts.add("localhost");

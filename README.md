@@ -18,7 +18,7 @@ npm run dev
 
 Open `http://127.0.0.1:4177`, choose the Pi options you need, then connect. The default command is `pi`; set `PI_COMMAND` on the server if you need a different executable. Provider, model, session directory, `--no-session`, and extra Pi flags are configurable from the sidebar.
 
-The server binds to `127.0.0.1` by default because it can start a local process. Set `HOST` if you intentionally need another bind address, and set `PORT` if you need a different port.
+The server binds to `127.0.0.1` by default because it can start a local process. Set `HOST` if you intentionally need another bind address, and set `PORT` if you need a different port. WebSocket origins are limited to the configured host and built-in local names, including `kodama.local`.
 
 ## Scripts
 
