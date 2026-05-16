@@ -73,7 +73,7 @@ pre {
   width: 100vw;
   height: 100vh;
   overflow: hidden;
-  background: #ffffff;
+  background: #f8fafc;
   transition: grid-template-columns 0.24s ease;
 }
 
@@ -90,7 +90,7 @@ pre {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   border-right: 1px solid #e5e7eb;
-  background: #ffffff;
+  background: #f8fafc;
   transition:
     margin-left 0.24s ease,
     opacity 0.24s ease;
@@ -113,7 +113,7 @@ pre {
   align-items: center;
   gap: 8px;
   border-bottom: 1px solid #e5e7eb;
-  background: #ffffff;
+  background: #f8fafc;
   padding: 12px 16px;
 }
 
@@ -343,7 +343,7 @@ pre {
 
 .conversation {
   grid-template-rows: minmax(0, 1fr) auto;
-  background: #ffffff;
+  background: #f8fafc;
 }
 
 :root[data-theme="dark"] .conversation {
@@ -522,6 +522,8 @@ pre {
 .message-assistant .message-body,
 .message-system .message-body {
   border-bottom-left-radius: 6px;
+  background: #eef2f7;
+  border-color: #dce4ed;
 }
 
 :root[data-theme="dark"] .message-body {
@@ -576,6 +578,17 @@ pre {
 .message-markdown blockquote,
 .message-markdown table {
   margin: 0;
+}
+
+.message-markdown hr {
+  border: none;
+  border-top: 1px solid #d1d5db;
+  width: 50%;
+  margin: 8px auto;
+}
+
+:root[data-theme="dark"] .message-markdown hr {
+  border-color: #374151;
 }
 
 .message-markdown ul,
@@ -835,7 +848,7 @@ pre {
 
 .composer {
   border-top: 1px solid #e5e7eb;
-  background: #ffffff;
+  background: #f8fafc;
   padding: 12px 16px;
 }
 
