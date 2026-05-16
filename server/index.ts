@@ -1,4 +1,4 @@
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,13 +14,7 @@ const isProduction = process.argv.includes("--production") || process.env.NODE_E
 const port = Number(process.env.PORT ?? DEFAULT_PORT);
 const host = process.env.HOST ?? "127.0.0.1";
 
-const vite = isProduction
-  ? null
-  : await createViteServer({
-      root,
-      server: { middlewareMode: true },
-      appType: "spa"
-    });
+let vite: ViteDevServer | null = null;
 
 const server = createServer(async (req, res) => {
   if (!req.url || req.url.startsWith("/rpc")) {
@@ -37,11 +31,37 @@ const server = createServer(async (req, res) => {
   await serveStatic(req.url, res);
 });
 
-const wss = new WebSocketServer({
-  server,
-  path: "/rpc",
-  verifyClient: ({ origin }: { origin?: string; req: IncomingMessage }) => isAllowedOrigin(origin, host, port)
+if (!isProduction) {
+  vite = await createViteServer({
+    root,
+    server: { middlewareMode: true, hmr: { server } },
+    appType: "spa"
+  });
+}
+
+const wss = new WebSocketServer({ noServer: true });
+
+server.on("upgrade", (req, socket, head) => {
+  const pathname = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`).pathname;
+  if (pathname !== "/rpc") {
+    if (!vite) {
+      socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+      socket.destroy();
+    }
+    return;
+  }
+
+  if (!isAllowedOrigin(req.headers.origin, host, port)) {
+    socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+    socket.destroy();
+    return;
+  }
+
+  wss.handleUpgrade(req, socket, head, (upgradedSocket) => {
+    wss.emit("connection", upgradedSocket, req);
+  });
 });
+
 wss.on("connection", (socket) => {
   const send = (message: unknown) => {
     if (socket.readyState === socket.OPEN) {

@@ -134,7 +134,7 @@ function formatToolDeltaValue(value: unknown): string {
 }
 
 function toolName(object: Record<string, unknown>): string {
-  return firstDisplayValue(object.toolName, object.tool_name, object.name, object.tool);
+  return firstDisplayValue(object.toolName, object.tool_name, object.name, object.tool, object.function);
 }
 
 function toolDetail(object: Record<string, unknown>, name: string): string {
@@ -148,14 +148,43 @@ function toolDetail(object: Record<string, unknown>, name: string): string {
 function commandDetail(object: Record<string, unknown>): string {
   const args = objectField(object.args);
   const input = objectField(object.input);
-  const argumentsValue = objectField(object.arguments);
-  return firstString(args?.command, input?.command, argumentsValue?.command, object.command);
+  const argumentsValue = objectOrJsonField(object.arguments);
+  const tool = objectField(object.tool);
+  const toolArgs = objectField(tool?.args);
+  const toolInput = objectField(tool?.input);
+  const toolArguments = objectOrJsonField(tool?.arguments);
+  const functionValue = objectField(object.function);
+  const functionArgs = objectField(functionValue?.args);
+  const functionInput = objectField(functionValue?.input);
+  const functionArguments = objectOrJsonField(functionValue?.arguments);
+  return firstString(
+    args?.command,
+    input?.command,
+    argumentsValue?.command,
+    toolArgs?.command,
+    toolInput?.command,
+    toolArguments?.command,
+    tool?.command,
+    functionArgs?.command,
+    functionInput?.command,
+    functionArguments?.command,
+    functionValue?.command,
+    object.command
+  );
 }
 
 function pathDetail(object: Record<string, unknown>): string {
   const args = objectField(object.args);
   const input = objectField(object.input);
-  const argumentsValue = objectField(object.arguments);
+  const argumentsValue = objectOrJsonField(object.arguments);
+  const tool = objectField(object.tool);
+  const toolArgs = objectField(tool?.args);
+  const toolInput = objectField(tool?.input);
+  const toolArguments = objectOrJsonField(tool?.arguments);
+  const functionValue = objectField(object.function);
+  const functionArgs = objectField(functionValue?.args);
+  const functionInput = objectField(functionValue?.input);
+  const functionArguments = objectOrJsonField(functionValue?.arguments);
   return firstString(
     object.path,
     object.file_path,
@@ -168,7 +197,31 @@ function pathDetail(object: Record<string, unknown>): string {
     input?.filePath,
     argumentsValue?.path,
     argumentsValue?.file_path,
-    argumentsValue?.filePath
+    argumentsValue?.filePath,
+    tool?.path,
+    tool?.file_path,
+    tool?.filePath,
+    toolArgs?.path,
+    toolArgs?.file_path,
+    toolArgs?.filePath,
+    toolInput?.path,
+    toolInput?.file_path,
+    toolInput?.filePath,
+    toolArguments?.path,
+    toolArguments?.file_path,
+    toolArguments?.filePath,
+    functionValue?.path,
+    functionValue?.file_path,
+    functionValue?.filePath,
+    functionArgs?.path,
+    functionArgs?.file_path,
+    functionArgs?.filePath,
+    functionInput?.path,
+    functionInput?.file_path,
+    functionInput?.filePath,
+    functionArguments?.path,
+    functionArguments?.file_path,
+    functionArguments?.filePath
   );
 }
 
@@ -214,6 +267,20 @@ function parseToolDelta(delta: string): unknown {
 
 function objectField(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+function objectOrJsonField(value: unknown): Record<string, unknown> | undefined {
+  const object = objectField(value);
+  if (object) {
+    return object;
+  }
+
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const parsed = objectField(parseToolDelta(value));
+  return parsed;
 }
 
 function looksLikeUuid(value: string): boolean {

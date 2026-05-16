@@ -62,6 +62,43 @@ describe("tool delta display helpers", () => {
     );
   });
 
+  it("extracts labels and details from nested tool and function shapes", () => {
+    expect(groupToolDeltas([JSON.stringify({ type: "tool_call_delta", tool: { name: "read", input: { path: "src/App.vue" } } })])[0]).toEqual(
+      expect.objectContaining({
+        label: "read",
+        detail: "src/App.vue"
+      })
+    );
+
+    expect(
+      groupToolDeltas([
+        JSON.stringify({
+          type: "tool_call_delta",
+          function: { name: "bash", arguments: { command: "npm test" } }
+        })
+      ])[0]
+    ).toEqual(
+      expect.objectContaining({
+        label: "bash",
+        detail: "npm test"
+      })
+    );
+
+    expect(
+      groupToolDeltas([
+        JSON.stringify({
+          type: "tool_call_delta",
+          function: { name: "bash", arguments: "{\"command\":\"npm run build\"}" }
+        })
+      ])[0]
+    ).toEqual(
+      expect.objectContaining({
+        label: "bash",
+        detail: "npm run build"
+      })
+    );
+  });
+
   it("infers running, done, and error status", () => {
     expect(groupToolDeltas([JSON.stringify({ type: "tool_execution_start", toolCallId: "tool-1", toolName: "bash" })])[0]).toEqual(
       expect.objectContaining({ status: "running", statusLabel: "In progress" })

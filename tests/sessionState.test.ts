@@ -6,6 +6,7 @@ import {
   reduceSessionEvent,
   reduceSessionResponse
 } from "../src/lib/sessionState";
+import { groupToolDeltas } from "../src/lib/toolDeltas";
 
 describe("session state reducer", () => {
   it("adds a local user prompt immediately as a completed message", () => {
@@ -282,6 +283,203 @@ describe("session state reducer", () => {
     ]);
   });
 
+  it("does not render duplicate generic groups for streamed partial tool call fragments", () => {
+    const state = createInitialSessionState();
+
+    reduceSessionEvent(state, { type: "message_start", messageId: "assistant-1", role: "assistant" });
+    reduceSessionEvent(state, {
+      type: "message_update",
+      messageId: "assistant-1",
+      assistantMessageEvent: { type: "tool_call_delta", delta: { type: "input_json_delta", partial_json: "{\"command\"" } }
+    });
+    reduceSessionEvent(state, {
+      type: "tool_execution_start",
+      toolCallId: "tool-1",
+      toolName: "bash",
+      args: { command: "pwd" }
+    });
+    reduceSessionEvent(state, {
+      type: "tool_execution_update",
+      toolCallId: "tool-1",
+      partialResult: { content: [{ type: "text", text: "running pwd" }] }
+    });
+    reduceSessionEvent(state, {
+      type: "tool_execution_end",
+      toolCallId: "tool-1",
+      success: true,
+      result: { content: [{ type: "text", text: "/tmp" }] }
+    });
+
+    const groups = groupToolDeltas(state.messages[0].toolDeltas);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toEqual(expect.objectContaining({ label: "bash", detail: "pwd", status: "done" }));
+    expect(groups[0].content).toContain("running pwd");
+    expect(groups[0].content).not.toContain("tool_call_delta");
+  });
+
+  it("ignores id-less partial assistant tool events without useful display information", () => {
+    const state = createInitialSessionState();
+
+    reduceSessionEvent(state, { type: "message_start", messageId: "assistant-1", role: "assistant" });
+    reduceSessionEvent(state, {
+      type: "message_update",
+      messageId: "assistant-1",
+      assistantMessageEvent: { type: "tool_call_delta", delta: { type: "input_json_delta", partial_json: "{" } }
+    });
+
+    expect(state.messages[0].toolDeltas).toEqual([]);
+  });
+
+  it("ignores id-only partial assistant tool events without useful display information", () => {
+    const state = createInitialSessionState();
+
+    reduceSessionEvent(state, { type: "message_start", messageId: "assistant-1", role: "assistant" });
+    reduceSessionEvent(state, {
+      type: "message_update",
+      messageId: "assistant-1",
+      assistantMessageEvent: { type: "tool_call_delta", toolCallId: "tool-1" }
+    });
+
+    expect(state.messages[0].toolDeltas).toEqual([]);
+  });
+
+  it("ignores partial assistant tool events with non-display content fragments", () => {
+    const state = createInitialSessionState();
+
+    reduceSessionEvent(state, { type: "message_start", messageId: "assistant-1", role: "assistant" });
+    reduceSessionEvent(state, {
+      type: "message_update",
+      messageId: "assistant-1",
+      assistantMessageEvent: {
+        type: "tool_call_delta",
+        content: [{ type: "input_json_delta", partial_json: "{" }]
+      }
+    });
+    reduceSessionEvent(state, {
+      type: "message_update",
+      messageId: "assistant-1",
+      assistantMessageEvent: {
+        type: "tool_call_delta",
+        content: "{\"command\""
+      }
+    });
+
+    expect(state.messages[0].toolDeltas).toEqual([]);
+  });
+
+  it("keeps complete streamed assistant tool calls and results even with sparse fields", () => {
+    const state = createInitialSessionState();
+
+    reduceSessionEvent(state, { type: "message_start", messageId: "assistant-1", role: "assistant" });
+    reduceSessionEvent(state, {
+      type: "message_update",
+      messageId: "assistant-1",
+      assistantMessageEvent: { type: "toolCall" }
+    });
+    reduceSessionEvent(state, {
+      type: "message_update",
+      messageId: "assistant-1",
+      assistantMessageEvent: { type: "tool_call" }
+    });
+    reduceSessionEvent(state, {
+      type: "message_update",
+      messageId: "assistant-1",
+      assistantMessageEvent: { type: "toolResult" }
+    });
+    reduceSessionEvent(state, {
+      type: "message_update",
+      messageId: "assistant-1",
+      assistantMessageEvent: { type: "tool_result" }
+    });
+
+    expect(state.messages[0].toolDeltas).toEqual([
+      JSON.stringify({ type: "toolCall" }),
+      JSON.stringify({ type: "tool_call" }),
+      JSON.stringify({ type: "toolResult" }),
+      JSON.stringify({ type: "tool_result" })
+    ]);
+  });
+
+  it("keeps streamed partial assistant tool events when nested tool metadata is displayable", () => {
+    const state = createInitialSessionState();
+
+    reduceSessionEvent(state, { type: "message_start", messageId: "assistant-1", role: "assistant" });
+    reduceSessionEvent(state, {
+      type: "message_update",
+      messageId: "assistant-1",
+      assistantMessageEvent: { type: "tool_call_delta", tool: { name: "read", input: { path: "src/App.vue" } } }
+    });
+    reduceSessionEvent(state, {
+      type: "message_update",
+      messageId: "assistant-1",
+      assistantMessageEvent: {
+        type: "tool_call_delta",
+        function: { name: "bash", arguments: { command: "npm test" } }
+      }
+    });
+    reduceSessionEvent(state, {
+      type: "message_update",
+      messageId: "assistant-1",
+      assistantMessageEvent: {
+        type: "tool_call_delta",
+        function: { name: "bash", arguments: "{\"command\":\"npm run build\"}" }
+      }
+    });
+
+    expect(state.messages[0].toolDeltas).toEqual([
+      JSON.stringify({ type: "tool_call_delta", tool: { name: "read", input: { path: "src/App.vue" } } }),
+      JSON.stringify({ type: "tool_call_delta", function: { name: "bash", arguments: { command: "npm test" } } }),
+      JSON.stringify({ type: "tool_call_delta", function: { name: "bash", arguments: "{\"command\":\"npm run build\"}" } })
+    ]);
+  });
+
+  it("filters generic partial tool fragments out of completed message content", () => {
+    const state = createInitialSessionState();
+
+    reduceSessionEvent(state, {
+      type: "message_end",
+      messageId: "assistant-1",
+      role: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "Done" },
+          { type: "tool_call_delta", toolCallId: "tool-1" },
+          { type: "tool_call_delta", delta: { type: "input_json_delta", partial_json: "{" } },
+          { type: "tool_call", id: "tool-1", name: "bash", arguments: { command: "pwd" } },
+          { type: "tool_result", toolCallId: "tool-1", content: [{ type: "text", text: "/tmp" }] }
+        ]
+      }
+    });
+
+    expect(state.messages[0].content).toBe("Done");
+    expect(state.messages[0].toolDeltas).toEqual([
+      JSON.stringify({ type: "tool_call", id: "tool-1", name: "bash", arguments: { command: "pwd" } }),
+      JSON.stringify({ type: "tool_result", toolCallId: "tool-1", content: [{ type: "text", text: "/tmp" }] })
+    ]);
+  });
+
+  it("filters generic partial tool fragments out of hydrated session content", () => {
+    const state = createInitialSessionState();
+
+    hydrateSessionMessages(state, [
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: [
+          { type: "text", text: "Done" },
+          { type: "tool_call_delta", toolCallId: "tool-1" },
+          { type: "tool_call", id: "tool-1", name: "read", input: { path: "package.json" } }
+        ]
+      }
+    ]);
+
+    expect(state.messages[0].content).toBe("Done");
+    expect(state.messages[0].toolDeltas).toEqual([
+      JSON.stringify({ type: "tool_call", id: "tool-1", name: "read", input: { path: "package.json" } })
+    ]);
+  });
+
   it("keeps non-text message_end content with the assistant message", () => {
     const state = createInitialSessionState();
 
@@ -457,7 +655,8 @@ describe("session state reducer", () => {
         content: [
           { type: "thinking", thinking: "checking files" },
           { type: "text", text: "# Done\n\nIt worked." },
-          { type: "tool_use", name: "read", input: { path: "package.json" } }
+          { type: "tool_use", name: "read", input: { path: "package.json" } },
+          { type: "tool_result", tool_use_id: "read-1", content: [{ type: "text", text: "package contents" }] }
         ]
       }
     ]);
@@ -476,7 +675,10 @@ describe("session state reducer", () => {
         role: "assistant",
         content: "# Done\n\nIt worked.",
         thinking: "checking files",
-        toolDeltas: [JSON.stringify({ type: "tool_use", name: "read", input: { path: "package.json" } })],
+        toolDeltas: [
+          JSON.stringify({ type: "tool_use", name: "read", input: { path: "package.json" } }),
+          JSON.stringify({ type: "tool_result", tool_use_id: "read-1", content: [{ type: "text", text: "package contents" }] })
+        ],
         status: "done"
       })
     ]);

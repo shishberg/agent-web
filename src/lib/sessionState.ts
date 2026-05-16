@@ -289,7 +289,9 @@ function extractHydratedContent(content: unknown): Pick<SessionMessage, "content
       continue;
     }
 
-    toolDeltas.push(JSON.stringify(item));
+    if (shouldDisplayAssistantToolDelta(item)) {
+      toolDeltas.push(JSON.stringify(item));
+    }
   }
 
   return { content: text.join(""), thinking: thinking.join(""), toolDeltas };
@@ -312,7 +314,7 @@ function applyMessageUpdate(state: SessionState, event: PiEvent): void {
     return;
   }
 
-  if (deltaType) {
+  if (deltaType && shouldDisplayAssistantToolDelta(assistantEvent)) {
     message.toolDeltas.push(JSON.stringify(assistantEvent));
   } else if (event.delta) {
     message.content += stringField(event.delta);
@@ -651,4 +653,156 @@ function textFromContent(value: unknown): string {
     })
     .filter(Boolean)
     .join("");
+}
+
+function shouldDisplayAssistantToolDelta(event: PiEvent | undefined): event is PiEvent {
+  if (!event) {
+    return false;
+  }
+
+  const type = stringField(event.type);
+  if (isCompleteAssistantToolDeltaType(type)) {
+    return true;
+  }
+
+  return hasUsefulToolDeltaInfo(event);
+}
+
+function isCompleteAssistantToolDeltaType(type: string): boolean {
+  return type === "toolCall" || type === "tool_call" || type === "tool_use" || type === "toolResult" || type === "tool_result";
+}
+
+function hasUsefulToolDeltaInfo(event: PiEvent): boolean {
+  return Boolean(
+    firstDisplayString(event.toolName, event.tool_name, event.name, event.tool, event.function) ||
+      commandField(event) ||
+      pathField(event)
+  );
+}
+
+function commandField(event: PiEvent): string {
+  const args = objectField(event.args);
+  const input = objectField(event.input);
+  const argumentsValue = objectOrJsonField(event.arguments);
+  const tool = objectField(event.tool);
+  const toolArgs = objectField(tool?.args);
+  const toolInput = objectField(tool?.input);
+  const toolArguments = objectOrJsonField(tool?.arguments);
+  const functionValue = objectField(event.function);
+  const functionArgs = objectField(functionValue?.args);
+  const functionInput = objectField(functionValue?.input);
+  const functionArguments = objectOrJsonField(functionValue?.arguments);
+  return firstString(
+    args?.command,
+    input?.command,
+    argumentsValue?.command,
+    toolArgs?.command,
+    toolInput?.command,
+    toolArguments?.command,
+    tool?.command,
+    functionArgs?.command,
+    functionInput?.command,
+    functionArguments?.command,
+    functionValue?.command,
+    event.command
+  );
+}
+
+function pathField(event: PiEvent): string {
+  const args = objectField(event.args);
+  const input = objectField(event.input);
+  const argumentsValue = objectOrJsonField(event.arguments);
+  const tool = objectField(event.tool);
+  const toolArgs = objectField(tool?.args);
+  const toolInput = objectField(tool?.input);
+  const toolArguments = objectOrJsonField(tool?.arguments);
+  const functionValue = objectField(event.function);
+  const functionArgs = objectField(functionValue?.args);
+  const functionInput = objectField(functionValue?.input);
+  const functionArguments = objectOrJsonField(functionValue?.arguments);
+  return firstString(
+    event.path,
+    event.file_path,
+    event.filePath,
+    args?.path,
+    args?.file_path,
+    args?.filePath,
+    input?.path,
+    input?.file_path,
+    input?.filePath,
+    argumentsValue?.path,
+    argumentsValue?.file_path,
+    argumentsValue?.filePath,
+    tool?.path,
+    tool?.file_path,
+    tool?.filePath,
+    toolArgs?.path,
+    toolArgs?.file_path,
+    toolArgs?.filePath,
+    toolInput?.path,
+    toolInput?.file_path,
+    toolInput?.filePath,
+    toolArguments?.path,
+    toolArguments?.file_path,
+    toolArguments?.filePath,
+    functionValue?.path,
+    functionValue?.file_path,
+    functionValue?.filePath,
+    functionArgs?.path,
+    functionArgs?.file_path,
+    functionArgs?.filePath,
+    functionInput?.path,
+    functionInput?.file_path,
+    functionInput?.filePath,
+    functionArguments?.path,
+    functionArguments?.file_path,
+    functionArguments?.filePath
+  );
+}
+
+function objectOrJsonField(value: unknown): Record<string, unknown> | undefined {
+  const object = objectField(value);
+  if (object && !Array.isArray(object)) {
+    return object;
+  }
+
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const parsed = objectField(parseJson(value));
+  return parsed && !Array.isArray(parsed) ? parsed : undefined;
+}
+
+function firstString(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return "";
+}
+
+function firstDisplayString(...values: unknown[]): string {
+  for (const value of values) {
+    const text = stringField(value).trim();
+    if (text && !looksLikeUuid(text)) {
+      return text;
+    }
+
+    const object = objectField(value);
+    if (object) {
+      const nested = firstDisplayString(object.name, object.displayName, object.label, object.id);
+      if (nested) {
+        return nested;
+      }
+    }
+  }
+
+  return "";
+}
+
+function looksLikeUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
