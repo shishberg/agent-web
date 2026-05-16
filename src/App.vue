@@ -6,6 +6,7 @@ import Message from "./components/ai-elements/Message.vue";
 import PromptInput from "./components/ai-elements/PromptInput.vue";
 import { renderMarkdown } from "./lib/markdown";
 import { RpcClient, type BridgeMessage, type BridgeStatus, type PiSessionSummary } from "./lib/rpcClient";
+import { groupToolDeltas } from "./lib/toolDeltas";
 import {
   acknowledgeExtensionRequest,
   appendLocalUserMessage,
@@ -87,6 +88,7 @@ const themeIcon = computed(() => ({ light: Sun, dark: Moon, system: Monitor })[t
 const sidebarIcon = computed(() => (sidebarCollapsed.value ? PanelLeftOpen : PanelLeftClose));
 const themeTitle = computed(() => `Theme: ${themePreference.value}`);
 const sessionError = computed(() => (session.statusText.startsWith("Pi request failed") ? session.statusText : ""));
+const toolDeltaCount = computed(() => session.messages.reduce((total, message) => total + message.toolDeltas.length, 0));
 const sessionMetadataRows = computed(() => {
   const rows = [
     { label: "Connection", value: connectionLabel.value },
@@ -130,7 +132,7 @@ watch(pendingExtension, (request) => {
 });
 
 watch(
-  () => [activeSessionId.value, session.messages.length, session.tools.length],
+  () => [activeSessionId.value, session.messages.length, toolDeltaCount.value],
   () => {
     void scrollMessagesToEnd();
   },
@@ -501,7 +503,7 @@ async function scrollMessagesToEnd() {
             <p>{{ sessionError }}</p>
           </div>
 
-          <div v-else-if="session.messages.length === 0 && session.tools.length === 0" class="welcome">
+          <div v-else-if="session.messages.length === 0" class="welcome">
             <h2>Start a chat with Pi</h2>
             <p>Send a prompt or open a saved session.</p>
           </div>
@@ -512,21 +514,22 @@ async function scrollMessagesToEnd() {
               :key="message.id"
               :role="message.role"
               :streaming="message.status === 'streaming'"
-              :copy-text="message.content"
+              :copy-text="message.content || undefined"
             >
               <details v-if="message.thinking" class="thinking">
                 <summary>Thinking</summary>
                 <pre>{{ message.thinking }}</pre>
               </details>
-              <div class="message-markdown" v-html="renderMarkdown(message.content || '...')"></div>
+              <details v-for="tool in groupToolDeltas(message.toolDeltas)" :key="`${message.id}-${tool.key}`" class="thinking tool-detail">
+                <summary>{{ tool.label }}</summary>
+                <pre>{{ tool.content }}</pre>
+              </details>
+              <div
+                v-if="message.content || (!message.thinking && message.toolDeltas.length === 0)"
+                class="message-markdown"
+                v-html="renderMarkdown(message.content || '...')"
+              ></div>
             </Message>
-
-            <div v-if="session.tools.length" class="activity-list" aria-label="Tool activity">
-              <div v-for="tool in session.tools" :key="tool.id" class="tool-row" :class="tool.status">
-                <span class="activity-name">{{ tool.name }}</span>
-                <span>{{ tool.status }}</span>
-              </div>
-            </div>
 
             <details v-if="session.queue.length" class="inline-activity">
               <summary>{{ session.queue.length }} queued command{{ session.queue.length === 1 ? "" : "s" }}</summary>

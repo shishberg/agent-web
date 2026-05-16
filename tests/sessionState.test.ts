@@ -127,6 +127,260 @@ describe("session state reducer", () => {
     expect(state.messages[0]).toEqual(expect.objectContaining({ content: "One message", status: "done" }));
   });
 
+  it("associates streamed tool execution events with the active assistant message", () => {
+    const state = createInitialSessionState();
+
+    reduceSessionEvent(state, { type: "message_start", messageId: "assistant-1", role: "assistant" });
+    reduceSessionEvent(state, {
+      type: "tool_execution_start",
+      toolCallId: "tool-1",
+      toolName: "bash",
+      args: { command: "pwd" }
+    });
+    reduceSessionEvent(state, {
+      type: "tool_execution_end",
+      toolCallId: "tool-1",
+      toolName: "bash",
+      isError: false,
+      result: { content: [{ type: "text", text: "/tmp" }] }
+    });
+    reduceSessionEvent(state, { type: "message_end", messageId: "assistant-1" });
+
+    expect(state.messages).toEqual([
+      expect.objectContaining({
+        id: "assistant-1",
+        role: "assistant",
+        toolDeltas: [
+          JSON.stringify({
+            type: "tool_execution_start",
+            toolCallId: "tool-1",
+            toolName: "bash",
+            args: { command: "pwd" }
+          }),
+          JSON.stringify({
+            type: "tool_execution_end",
+            toolCallId: "tool-1",
+            toolName: "bash",
+            isError: false,
+            result: { content: [{ type: "text", text: "/tmp" }] }
+          })
+        ],
+        status: "done"
+      })
+    ]);
+  });
+
+  it("keeps tool execution events visible on the latest assistant message after streaming ends", () => {
+    const state = createInitialSessionState();
+
+    reduceSessionEvent(state, { type: "message_start", messageId: "assistant-1", role: "assistant" });
+    reduceSessionEvent(state, { type: "message_update", messageId: "assistant-1", assistantMessageEvent: { type: "text_delta", delta: "I'll check." } });
+    reduceSessionEvent(state, { type: "message_end", messageId: "assistant-1" });
+    reduceSessionEvent(state, {
+      type: "tool_execution_start",
+      toolCallId: "tool-1",
+      toolName: "bash",
+      args: { command: "pwd" }
+    });
+    reduceSessionEvent(state, {
+      type: "tool_execution_end",
+      toolCallId: "tool-1",
+      isError: false,
+      result: { content: [{ type: "text", text: "/tmp" }] }
+    });
+
+    expect(state.messages).toEqual([
+      expect.objectContaining({
+        id: "assistant-1",
+        content: "I'll check.",
+        toolDeltas: [
+          JSON.stringify({
+            type: "tool_execution_start",
+            toolCallId: "tool-1",
+            toolName: "bash",
+            args: { command: "pwd" }
+          }),
+          JSON.stringify({
+            type: "tool_execution_end",
+            toolCallId: "tool-1",
+            isError: false,
+            result: { content: [{ type: "text", text: "/tmp" }] }
+          })
+        ]
+      })
+    ]);
+  });
+
+  it("creates an assistant message for tool execution events when none exists yet", () => {
+    const state = createInitialSessionState();
+
+    reduceSessionEvent(state, {
+      type: "tool_execution_start",
+      toolCallId: "tool-1",
+      toolName: "bash",
+      args: { command: "pwd" }
+    });
+
+    expect(state.messages).toEqual([
+      expect.objectContaining({
+        role: "assistant",
+        content: "",
+        toolDeltas: [
+          JSON.stringify({
+            type: "tool_execution_start",
+            toolCallId: "tool-1",
+            toolName: "bash",
+            args: { command: "pwd" }
+          })
+        ],
+        status: "streaming"
+      })
+    ]);
+  });
+
+  it("merges early tool events into the next assistant message", () => {
+    const state = createInitialSessionState();
+
+    reduceSessionEvent(state, {
+      type: "tool_execution_start",
+      toolCallId: "tool-1",
+      toolName: "bash",
+      args: { command: "pwd" }
+    });
+    reduceSessionEvent(state, { type: "message_start", messageId: "assistant-1", role: "assistant" });
+    reduceSessionEvent(state, {
+      type: "message_update",
+      messageId: "assistant-1",
+      assistantMessageEvent: { type: "text_delta", delta: "Checking." }
+    });
+    reduceSessionEvent(state, {
+      type: "tool_execution_end",
+      toolCallId: "tool-1",
+      isError: false,
+      result: { content: [{ type: "text", text: "/tmp" }] }
+    });
+
+    expect(state.messages).toEqual([
+      expect.objectContaining({
+        id: "assistant-1",
+        content: "Checking.",
+        toolDeltas: [
+          JSON.stringify({
+            type: "tool_execution_start",
+            toolCallId: "tool-1",
+            toolName: "bash",
+            args: { command: "pwd" }
+          }),
+          JSON.stringify({
+            type: "tool_execution_end",
+            toolCallId: "tool-1",
+            isError: false,
+            result: { content: [{ type: "text", text: "/tmp" }] }
+          })
+        ]
+      })
+    ]);
+  });
+
+  it("keeps non-text message_end content with the assistant message", () => {
+    const state = createInitialSessionState();
+
+    reduceSessionEvent(state, {
+      type: "message_end",
+      messageId: "assistant-1",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "checking files" },
+          { type: "text", text: "Done" },
+          { type: "tool_use", name: "read", input: { path: "package.json" } }
+        ]
+      }
+    });
+
+    expect(state.messages).toEqual([
+      expect.objectContaining({
+        id: "assistant-1",
+        role: "assistant",
+        content: "Done",
+        thinking: "checking files",
+        toolDeltas: [JSON.stringify({ type: "tool_use", name: "read", input: { path: "package.json" } })],
+        status: "done"
+      })
+    ]);
+  });
+
+  it("hydrates tool result messages into the previous assistant message", () => {
+    const state = createInitialSessionState();
+
+    hydrateSessionMessages(state, [
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "Let me inspect that." },
+          { type: "toolCall", id: "call_1", name: "bash", arguments: { command: "find src -type f" } }
+        ]
+      },
+      {
+        role: "toolResult",
+        toolCallId: "call_1",
+        toolName: "bash",
+        content: [{ type: "text", text: "src/App.vue\nsrc/styles.css\n" }],
+        isError: false
+      }
+    ]);
+
+    expect(state.messages).toEqual([
+      expect.objectContaining({
+        role: "assistant",
+        content: "Let me inspect that.",
+        toolDeltas: [
+          JSON.stringify({ type: "toolCall", id: "call_1", name: "bash", arguments: { command: "find src -type f" } }),
+          JSON.stringify({
+            role: "toolResult",
+            toolCallId: "call_1",
+            toolName: "bash",
+            content: [{ type: "text", text: "src/App.vue\nsrc/styles.css\n" }],
+            isError: false
+          })
+        ]
+      })
+    ]);
+  });
+
+  it("merges message_end non-text content with already streamed tool deltas", () => {
+    const state = createInitialSessionState();
+
+    reduceSessionEvent(state, { type: "message_start", messageId: "assistant-1", role: "assistant" });
+    reduceSessionEvent(state, {
+      type: "message_update",
+      messageId: "assistant-1",
+      assistantMessageEvent: { type: "tool_use", name: "read", input: { path: "package.json" } }
+    });
+    reduceSessionEvent(state, {
+      type: "message_end",
+      messageId: "assistant-1",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "tool_use", name: "read", input: { path: "package.json" } },
+          { type: "tool_result", tool_use_id: "read-1", content: [{ type: "text", text: "package contents" }] }
+        ]
+      }
+    });
+
+    expect(state.messages).toEqual([
+      expect.objectContaining({
+        id: "assistant-1",
+        toolDeltas: [
+          JSON.stringify({ type: "tool_use", name: "read", input: { path: "package.json" } }),
+          JSON.stringify({ type: "tool_result", tool_use_id: "read-1", content: [{ type: "text", text: "package contents" }] })
+        ],
+        status: "done"
+      })
+    ]);
+  });
+
   it("captures extension UI request fields whether they are nested or top-level", () => {
     const state = createInitialSessionState();
 

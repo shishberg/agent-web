@@ -1,3 +1,5 @@
+import { rawToolDeltaId } from "./toolDeltas";
+
 export type Role = "user" | "assistant" | "system";
 export type MessageStatus = "streaming" | "done";
 
@@ -116,7 +118,7 @@ export function reduceSessionEvent(state: SessionState, event: PiEvent): Session
       break;
     case "message_start":
       state.activeMessageId = resolveMessageId(state, event);
-      applyCompleteMessage(upsertMessage(state, state.activeMessageId, roleFromEvent(event), "streaming"), event);
+      applyCompleteMessage(upsertMessageForStart(state, state.activeMessageId, roleFromEvent(event), "streaming"), event);
       break;
     case "message_update":
       applyMessageUpdate(state, event);
@@ -133,6 +135,7 @@ export function reduceSessionEvent(state: SessionState, event: PiEvent): Session
         input: event.input ?? event.args,
         log: []
       });
+      appendToolDeltaToActiveAssistant(state, event);
       break;
     case "tool_execution_update":
       updateTool(state, toolId(event), (tool) => {
@@ -141,12 +144,14 @@ export function reduceSessionEvent(state: SessionState, event: PiEvent): Session
           tool.log = [partial];
         }
       });
+      appendToolDeltaToActiveAssistant(state, event);
       break;
     case "tool_execution_end":
       updateTool(state, toolId(event), (tool) => {
         tool.status = event.success === false || event.isError === true ? "failed" : "done";
         tool.output = event.output ?? event.result;
       });
+      appendToolDeltaToActiveAssistant(state, event);
       break;
     case "queue_update":
       state.queue = queueItems(event);
@@ -197,7 +202,8 @@ export function acknowledgeExtensionRequest(state: SessionState, id: string): vo
 }
 
 export function hydrateSessionMessages(state: SessionState, piMessages: unknown[]): SessionState {
-  state.messages = piMessages.map((message, index) => hydrateSessionMessage(message, index));
+  state.messages = [];
+  piMessages.forEach((message, index) => hydrateSessionMessageIntoState(state, message, index));
   state.tools = [];
   state.queue = [];
   state.extensionRequests = [];
@@ -222,24 +228,34 @@ export function appendLocalUserMessage(state: SessionState, content: string): Se
   return message;
 }
 
-function hydrateSessionMessage(value: unknown, index: number): SessionMessage {
+function hydrateSessionMessageIntoState(state: SessionState, value: unknown, index: number): void {
   const message = objectField(value);
   const role = roleFromHydratedMessage(message);
   const extracted = extractHydratedContent(message?.content);
+  if (isHydratedToolResult(message)) {
+    const target = assistantMessageForToolDelta(state, JSON.stringify(message));
+    target.toolDeltas.push(JSON.stringify(message));
+    target.status = "done";
+    return;
+  }
 
-  return {
+  state.messages.push({
     id: stringField(message?.id) || numberField(message?.timestamp) || `pi-message-${index + 1}`,
     role,
     content: extracted.content,
     thinking: extracted.thinking,
     toolDeltas: extracted.toolDeltas,
     status: "done"
-  };
+  });
 }
 
 function roleFromHydratedMessage(message: Record<string, unknown> | undefined): Role {
   const role = stringField(message?.role);
   return role === "user" || role === "system" ? role : "assistant";
+}
+
+function isHydratedToolResult(message: Record<string, unknown> | undefined): boolean {
+  return stringField(message?.role) === "toolResult";
 }
 
 function extractHydratedContent(content: unknown): Pick<SessionMessage, "content" | "thinking" | "toolDeltas"> {
@@ -322,11 +338,77 @@ function upsertMessage(state: SessionState, id: string, role: Role, status: Mess
   return message;
 }
 
+function upsertMessageForStart(state: SessionState, id: string, role: Role, status: MessageStatus): SessionMessage {
+  if (role === "assistant") {
+    const pendingToolMessage = state.messages.at(-1);
+    if (isSyntheticToolMessage(pendingToolMessage)) {
+      pendingToolMessage.id = id;
+      pendingToolMessage.status = status;
+      return pendingToolMessage;
+    }
+  }
+
+  return upsertMessage(state, id, role, status);
+}
+
 function updateTool(state: SessionState, id: string, update: (tool: ToolExecution) => void): void {
   const tool = state.tools.find((item) => item.id === id);
   if (tool) {
     update(tool);
   }
+}
+
+function appendToolDeltaToActiveAssistant(state: SessionState, event: PiEvent): void {
+  const delta = JSON.stringify(event);
+  const message = assistantMessageForToolDelta(state, delta);
+  message.toolDeltas.push(delta);
+}
+
+function assistantMessageForToolDelta(state: SessionState, delta: string): SessionMessage {
+  const messageWithTool = messageForExistingToolDelta(state, delta);
+  if (messageWithTool) {
+    return messageWithTool;
+  }
+
+  const activeMessage = state.activeMessageId
+    ? state.messages.find((message) => message.id === state.activeMessageId && message.role === "assistant")
+    : undefined;
+  if (activeMessage) {
+    return activeMessage;
+  }
+
+  const latestMessage = state.messages.at(-1);
+  if (latestMessage?.role === "assistant") {
+    return latestMessage;
+  }
+
+  return upsertMessage(state, createId("assistant-tools"), "assistant", "streaming");
+}
+
+function messageForExistingToolDelta(state: SessionState, delta: string): SessionMessage | undefined {
+  const object = objectField(parseJson(delta));
+  const id = object ? rawToolDeltaId(object) : "";
+  if (!id) {
+    return undefined;
+  }
+
+  return state.messages.find((message) =>
+    message.toolDeltas.some((existing) => {
+      const existingObject = objectField(parseJson(existing));
+      return existingObject ? rawToolDeltaId(existingObject) === id : false;
+    })
+  );
+}
+
+function isSyntheticToolMessage(message: SessionMessage | undefined): message is SessionMessage {
+  return Boolean(
+    message &&
+      message.role === "assistant" &&
+      message.id.startsWith("assistant-tools-") &&
+      !message.content &&
+      !message.thinking &&
+      message.toolDeltas.length > 0
+  );
 }
 
 function addExtensionRequest(state: SessionState, event: PiEvent): void {
@@ -493,26 +575,41 @@ function objectField(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
 }
 
+function parseJson(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
 function applyCompleteMessage(message: SessionMessage, event: PiEvent): void {
   const eventMessage = objectField(event.message);
   const content = eventMessage?.content;
-  if (!content || message.content) {
+  if (!content) {
     return;
   }
 
   if (typeof content === "string") {
-    message.content = content;
+    if (!message.content) {
+      message.content = content;
+    }
     return;
   }
 
   if (Array.isArray(content)) {
-    message.content = content
-      .map((part) => {
-        const item = objectField(part);
-        return stringField(item?.text);
-      })
-      .filter(Boolean)
-      .join("");
+    const extracted = extractHydratedContent(content);
+    if (extracted.content && !message.content) {
+      message.content = extracted.content;
+    }
+    if (extracted.thinking && !message.thinking) {
+      message.thinking = extracted.thinking;
+    }
+    for (const delta of extracted.toolDeltas) {
+      if (!message.toolDeltas.includes(delta)) {
+        message.toolDeltas.push(delta);
+      }
+    }
   }
 }
 

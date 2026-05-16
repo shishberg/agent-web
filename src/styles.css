@@ -369,19 +369,17 @@ pre {
   background: rgb(107 114 128 / 0.32);
 }
 
-.message-stack,
-.welcome {
-  width: min(768px, 100%);
-  margin: 0 auto;
-}
-
 .message-stack {
   display: grid;
+  width: min(1040px, 100%);
+  margin: 0 auto;
   gap: 16px;
   min-width: 0;
 }
 
 .welcome {
+  width: min(768px, 100%);
+  margin: 0 auto;
   display: grid;
   min-height: 46vh;
   align-content: center;
@@ -468,7 +466,7 @@ pre {
 .message-body {
   position: relative;
   min-width: 0;
-  max-width: min(80%, 680px);
+  max-width: min(80%, 880px);
   border: 1px solid #e5e7eb;
   border-radius: 18px;
   background: #ffffff;
@@ -708,46 +706,18 @@ pre {
   background: rgb(255 255 255 / 0.14);
 }
 
-.inline-activity,
-.activity-list {
+.inline-activity {
   width: min(728px, calc(100% - 42px));
   margin-left: 42px;
   font-size: 13px;
 }
 
-.activity-list {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
-}
-
-.tool-row {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 8px;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  background: #f9fafb;
-  color: #6b7280;
-  padding: 6px 10px;
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.tool-row span:last-child {
-  margin-left: auto;
-  flex: 0 0 auto;
-}
-
-.tool-row.failed,
 .error-row {
   border-color: #fca5a5;
 }
 
 :root[data-theme="dark"] .thinking,
-:root[data-theme="dark"] .inline-activity,
-:root[data-theme="dark"] .tool-row {
+:root[data-theme="dark"] .inline-activity {
   border-color: #374151;
   background: #111827;
   color: #d1d5db;
@@ -768,19 +738,6 @@ pre {
   margin-left: auto;
 }
 
-.activity-name {
-  min-width: 0;
-  overflow: hidden;
-  color: #374151;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-:root[data-theme="dark"] .activity-name {
-  color: #e5e7eb;
-}
-
 .thinking pre,
 .inline-activity pre {
   max-width: 100%;
@@ -789,6 +746,11 @@ pre {
   color: inherit;
   font-size: 12px;
   line-height: 1.5;
+}
+
+.tool-detail pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .compact-list {
@@ -976,8 +938,4 @@ pre {
     margin-left: 0;
   }
 
-  .activity-list {
-    width: 100%;
-    margin-left: 0;
-  }
 }
