@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Agent Chat</title>
+    <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+    <script src="https://cdn.jsdelivr.net/npm/lucide@0.263.0/dist/umd/lucide.min.js"></script>
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&amp;family=Space+Mono:wght@400;700&amp;display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ["DM Sans", "sans-serif"],
+              mono: ["Space Mono", "monospace"],
+            },
+          },
+        },
+      };
+    </script>
+    <style>
+      body {
+        font-family: "DM Sans", sans-serif;
+      }
+      .msg-scroll::-webkit-scrollbar {
+        width: 6px;
+      }
+      .msg-scroll::-webkit-scrollbar-thumb {
+        background: rgba(128, 128, 128, 0.3);
+        border-radius: 3px;
+      }
+      .sidebar-wrap {
+        transition:
+          margin-left 0.25s ease,
+          opacity 0.25s ease;
+      }
+      .tool-detail {
+        max-height: 0;
+        overflow: hidden;
+        transition: max-height 0.3s ease;
+      }
+      .tool-detail.open {
+        max-height: 600px;
+      }
+    </style>
+    <script src="/_sdk/data_sdk.js" type="text/javascript"></script>
+    <script src="/_sdk/resizing_sdk.js" type="text/javascript"></script>
+  </head>
+  <body
+    data-template-id="__page-root"
+    class="h-screen flex overflow-hidden bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100"
+  >
+    <!-- Sidebar -->
+    <aside
+      id="sidebar"
+      class="sidebar-wrap w-72 flex-shrink-0 flex flex-col border-r border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900"
+    >
+      <div
+        class="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-800"
+      >
+        <button
+          id="theme-btn"
+          onclick="cycleTheme()"
+          class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition"
+          title="Toggle theme"
+        >
+          <i data-lucide="sun" class="w-4 h-4"></i>
+        </button>
+        <button
+          onclick="newSession()"
+          class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition"
+          title="New chat"
+        >
+          <i data-lucide="plus" class="w-4 h-4"></i>
+        </button>
+      </div>
+      <div class="px-3 py-2">
+        <h2
+          data-template-id="sidebar-title"
+          class="canva-text text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500 px-1"
+        ></h2>
+      </div>
+      <nav
+        id="session-list"
+        class="flex-1 overflow-y-auto px-2 space-y-0.5"
+      ></nav>
+      <div class="p-3 border-t border-gray-200 dark:border-gray-800">
+        <div class="flex items-center gap-2 px-2">
+          <div
+            class="w-7 h-7 rounded-full bg-emerald-500 flex items-center justify-center text-white text-xs font-bold"
+          >
+            U
+          </div>
+          <span class="text-sm font-medium truncate">User</span>
+        </div>
+      </div>
+    </aside>
+    <!-- Main -->
+    <div class="flex-1 flex flex-col min-w-0">
+      <!-- Header -->
+      <header
+        class="flex items-center gap-2 px-4 py-3 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900"
+      >
+        <button
+          id="sidebar-toggle"
+          onclick="toggleSidebar()"
+          class="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition"
+          title="Toggle sidebar"
+        >
+          <i data-lucide="panel-left" class="w-4 h-4"></i>
+        </button>
+        <h1 id="session-title" class="text-base font-semibold truncate"></h1>
+        <div class="ml-auto flex items-center gap-1">
+          <span
+            id="model-badge"
+            class="text-xs px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 font-medium"
+            >GPT-4o</span
+          >
+        </div>
+      </header>
+      <!-- Messages -->
+      <main
+        id="messages"
+        class="msg-scroll flex-1 overflow-y-auto px-4 py-6 space-y-4 bg-white dark:bg-gray-900"
+      ></main>
+      <!-- Input -->
+      <div
+        class="border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 px-4 py-3"
+      >
+        <form id="chat-form" class="flex items-end gap-2 max-w-3xl mx-auto">
+          <div class="flex-1 relative">
+            <textarea
+              id="msg-input"
+              rows="1"
+              placeholder="Send a message…"
+              class="w-full resize-none rounded-xl border border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:focus:ring-emerald-600"
+              style="max-height: 160px"
+            ></textarea>
+          </div>
+          <button
+            type="submit"
+            class="p-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white transition flex-shrink-0"
+          >
+            <i data-lucide="arrow-up" class="w-4 h-4"></i>
+          </button>
+        </form>
+      </div>
+    </div>
+    <script src="/_sdk/editing_sdk.js"></script>
+    <script>
+      // --- Theme ---
+      const themes = ["light", "dark", "system"];
+      const themeIcons = ["sun", "moon", "monitor"];
+      let themeIdx = 0;
+      function cycleTheme() {
+        themeIdx = (themeIdx + 1) % 3;
+        applyTheme();
+      }
+      function applyTheme() {
+        const t = themes[themeIdx];
+        const dark =
+          t === "dark" ||
+          (t === "system" && matchMedia("(prefers-color-scheme:dark)").matches);
+        document.documentElement.classList.toggle("dark", dark);
+        const btn = document.getElementById("theme-btn");
+        btn.innerHTML =
+          '<i data-lucide="' + themeIcons[themeIdx] + '" class="w-4 h-4"></i>';
+        lucide.createIcons();
+      }
+
+      // --- Sidebar ---
+      let sidebarOpen = true;
+      function toggleSidebar() {
+        sidebarOpen = !sidebarOpen;
+        document.getElementById("sidebar").style.marginLeft = sidebarOpen
+          ? "0"
+          : "-18rem";
+        document.getElementById("sidebar").style.opacity = sidebarOpen
+          ? "1"
+          : "0";
+      }
+
+      // --- Sessions ---
+      const sessions = [
+        {
+          id: 1,
+          title: "Deploying a FastAPI app",
+          messages: [
+            {
+              role: "user",
+              text: "How do I deploy a FastAPI app to production?",
+            },
+            {
+              role: "agent",
+              text: "Great question! There are several approaches. Let me look into the best options for you.",
+            },
+            {
+              role: "tool",
+              name: "search_docs",
+              input: "FastAPI deployment guides",
+              output:
+                "Found 12 relevant guides covering Docker, AWS, and Railway deployments.",
+            },
+            {
+              role: "agent",
+              text: "Based on the docs, I'd recommend using Docker with a cloud provider like Railway or Fly.io for simplicity. Here's a quick approach:\n\n1. Create a `Dockerfile`\n2. Push to a Git repo\n3. Connect to Railway\n\nWant me to generate the Dockerfile?",
+            },
+          ],
+        },
+        {
+          id: 2,
+          title: "React state patterns",
+          messages: [
+            {
+              role: "user",
+              text: "What are the best state management patterns in React these days?",
+            },
+            { role: "agent", text: "Let me check the latest recommendations." },
+            {
+              role: "subagent",
+              name: "research-agent",
+              summary:
+                "Analysed 8 sources on React state management trends for 2026.",
+            },
+            {
+              role: "agent",
+              text: "The landscape has settled around a few patterns:\n\n\u2022 **Local state** \u2014 `useState`/`useReducer` for component-level\n\u2022 **Server state** \u2014 TanStack Query or SWR\n\u2022 **Global client state** \u2014 Zustand (most popular) or Jotai\n\nRedux is still used in large enterprise apps but new projects lean toward Zustand.",
+            },
+          ],
+        },
+        {
+          id: 3,
+          title: "SQL query optimisation",
+          messages: [
+            {
+              role: "user",
+              text: "My PostgreSQL query is slow on a 10M row table. How can I optimise it?",
+            },
+            {
+              role: "tool",
+              name: "run_explain",
+              input:
+                "EXPLAIN ANALYZE SELECT * FROM orders WHERE status='pending' AND created_at > now()-interval '7 days'",
+              output:
+                "Seq Scan on orders (cost=0.00..284312.00 rows=48210 width=124)\n  Filter: ((status = 'pending') AND (created_at > ...))\n  Rows Removed by Filter: 9951790\nPlanning Time: 0.12 ms\nExecution Time: 1823.45 ms",
+            },
+            {
+              role: "agent",
+              text: "The EXPLAIN output shows a **sequential scan** \u2014 no index is being used. I'd recommend:\n\n1. Add a composite index: `CREATE INDEX idx_orders_status_created ON orders(status, created_at);`\n2. Consider partitioning by date if data grows further\n3. Use `WHERE` clauses that match index order",
+            },
+          ],
+        },
+      ];
+
+      let activeSession = 1;
+
+      function renderSessions() {
+        const list = document.getElementById("session-list");
+        list.innerHTML = "";
+        sessions.forEach((s) => {
+          const btn = document.createElement("button");
+          btn.className =
+            "w-full text-left px-3 py-2 rounded-lg text-sm truncate transition " +
+            (s.id === activeSession
+              ? "bg-gray-100 dark:bg-gray-800 font-medium"
+              : "hover:bg-gray-50 dark:hover:bg-gray-800/50 text-gray-600 dark:text-gray-400");
+          btn.textContent = s.title;
+          btn.onclick = () => {
+            activeSession = s.id;
+            renderSessions();
+            renderMessages();
+          };
+          list.appendChild(btn);
+        });
+      }
+
+      function renderMessages() {
+        const session = sessions.find((s) => s.id === activeSession);
+        document.getElementById("session-title").textContent = session.title;
+        const container = document.getElementById("messages");
+        container.innerHTML = "";
+        session.messages.forEach((m) => {
+          const div = document.createElement("div");
+          div.className = "max-w-3xl mx-auto";
+          if (m.role === "user") {
+            div.innerHTML =
+              '<div class="flex justify-end"><div class="bg-emerald-600 dark:bg-emerald-700 text-white px-4 py-2.5 rounded-2xl rounded-br-md text-sm max-w-[80%]">' +
+              escapeHtml(m.text) +
+              "</div></div>";
+          } else if (m.role === "agent") {
+            div.innerHTML =
+              '<div class="flex gap-3"><div class="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 px-4 py-2.5 rounded-2xl rounded-bl-md text-sm max-w-[80%] prose prose-sm dark:prose-invert">' +
+              formatMarkdown(m.text) +
+              "</div></div>";
+          } else if (m.role === "tool") {
+            div.innerHTML =
+              '<div class="flex gap-3 ml-10"><div class="w-full border border-dashed border-gray-300 dark:border-gray-700 rounded-xl px-4 py-2 bg-gray-50 dark:bg-gray-800"><button onclick="this.nextElementSibling.classList.toggle(\'open\')" class="flex items-center gap-2 text-xs font-medium text-gray-500 dark:text-gray-400 w-full"><i data-lucide="wrench" class="w-3.5 h-3.5"></i><span class="font-mono">' +
+              escapeHtml(m.name) +
+              '</span><i data-lucide="chevron-down" class="w-3 h-3 ml-auto"></i></button><div class="tool-detail"><div class="mt-2 text-xs font-mono space-y-1"><div class="text-gray-600 dark:text-gray-400">Input: <span class="text-gray-700 dark:text-gray-300">' +
+              escapeHtml(m.input) +
+              '</span></div><div class="text-gray-600 dark:text-gray-400">Output: <span class="text-gray-700 dark:text-gray-300">' +
+              escapeHtml(m.output) +
+              "</span></div></div></div></div></div>";
+          } else if (m.role === "subagent") {
+            div.innerHTML =
+              '<div class="flex gap-3 ml-10"><div class="border border-dashed border-purple-300 dark:border-purple-700 rounded-xl px-4 py-2 bg-purple-50 dark:bg-purple-900/20"><div class="flex items-center gap-2 text-xs font-medium text-purple-600 dark:text-purple-400"><i data-lucide="cpu" class="w-3.5 h-3.5"></i><span class="font-mono">' +
+              escapeHtml(m.name) +
+              '</span></div><p class="text-xs text-gray-600 dark:text-gray-400 mt-1">' +
+              escapeHtml(m.summary) +
+              "</p></div></div>";
+          }
+          container.appendChild(div);
+        });
+        lucide.createIcons();
+        container.scrollTop = container.scrollHeight;
+      }
+
+      function escapeHtml(str) {
+        return str
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+      }
+
+      function formatMarkdown(text) {
+        let html = escapeHtml(text);
+        html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+        html = html.replace(
+          /`([^`]+)`/g,
+          '<code class="bg-gray-100 dark:bg-gray-700 px-1 py-0.5 rounded text-xs font-mono">$1</code>',
+        );
+        html = html.replace(/\n/g, "<br>");
+        return html;
+      }
+
+      function newSession() {
+        const id = sessions.length + 1;
+        sessions.unshift({ id: id, title: "New chat", messages: [] });
+        activeSession = id;
+        renderSessions();
+        renderMessages();
+      }
+
+      // --- Chat form ---
+      document
+        .getElementById("chat-form")
+        .addEventListener("submit", function (e) {
+          e.preventDefault();
+          const input = document.getElementById("msg-input");
+          const text = input.value.trim();
+          if (!text) return;
+          const session = sessions.find((s) => s.id === activeSession);
+          session.messages.push({ role: "user", text: text });
+          if (session.title === "New chat") {
+            session.title = text.slice(0, 30) + (text.length > 30 ? "..." : "");
+            renderSessions();
+          }
+          input.value = "";
+          input.style.height = "auto";
+          renderMessages();
+          // Simulate agent response
+          setTimeout(() => {
+            session.messages.push({
+              role: "agent",
+              text: "I'll help you with that. Let me think about it...",
+            });
+            renderMessages();
+          }, 800);
+        });
+
+      // Auto-resize textarea
+      document
+        .getElementById("msg-input")
+        .addEventListener("input", function () {
+          this.style.height = "auto";
+          this.style.height = Math.min(this.scrollHeight, 160) + "px";
+        });
+
+      // Init
+      renderSessions();
+      renderMessages();
+      lucide.createIcons();
+    </script>
+    <script>
+      (function () {
+        function c() {
+          var b = a.contentDocument || a.contentWindow.document;
+          if (b) {
+            var d = b.createElement("script");
+            d.innerHTML =
+              "window.__CF$cv$params={r:'9fc66322a0c99a8b',t:'MTc3ODg5MjYxNi4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";
+            b.getElementsByTagName("head")[0].appendChild(d);
+          }
+        }
+        if (document.body) {
+          var a = document.createElement("iframe");
+          a.height = 1;
+          a.width = 1;
+          a.style.position = "absolute";
+          a.style.top = 0;
+          a.style.left = 0;
+          a.style.border = "none";
+          a.style.visibility = "hidden";
+          document.body.appendChild(a);
+          if ("loading" !== document.readyState) c();
+          else if (window.addEventListener)
+            document.addEventListener("DOMContentLoaded", c);
+          else {
+            var e = document.onreadystatechange || function () {};
+            document.onreadystatechange = function (b) {
+              e(b);
+              "loading" !== document.readyState &&
+                ((document.onreadystatechange = e), c());
+            };
+          }
+        }
+      })();
+    </script>
+  </body>
+</html>
