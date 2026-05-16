@@ -24,6 +24,7 @@ describe("Pi session bridge", () => {
   let process: FakePiProcess;
   let sent: unknown[];
   let listSessions: ReturnType<typeof vi.fn>;
+  let openSession: ReturnType<typeof vi.fn>;
   let bridge: PiSessionBridge;
 
   beforeEach(() => {
@@ -32,11 +33,24 @@ describe("Pi session bridge", () => {
     listSessions = vi.fn().mockResolvedValue([
       { id: "s1", path: "/tmp/pi/s1.jsonl", title: "Existing session", modified: "2026-05-16T00:00:00.000Z" }
     ]);
+    openSession = vi.fn().mockReturnValue({
+      buildSessionContext: () => ({
+        messages: [{ role: "user", content: "saved hello" }],
+        model: { provider: "anthropic", modelId: "claude-sonnet-4-5" },
+        thinkingLevel: "medium"
+      }),
+      getSessionId: () => "s1",
+      getSessionFile: () => "/tmp/pi/s1.jsonl",
+      getCwd: () => "/repo",
+      getSessionName: () => "Existing session",
+      getHeader: () => ({ type: "session", id: "s1", timestamp: "2026-05-16T00:00:00.000Z", cwd: "/repo" })
+    });
     bridge = new PiSessionBridge({
       cwd: "/repo",
       sessionDir: "/tmp/pi",
       createPiProcess: () => process,
       listSessions,
+      openSession,
       send: (message) => sent.push(message)
     });
   });
@@ -60,18 +74,48 @@ describe("Pi session bridge", () => {
     expect(process.sent).toEqual([{ type: "prompt", message: "hello" }]);
   });
 
-  it("opens a Pi-owned session and hydrates state from Pi", async () => {
+  it("opens a Pi-owned session from persisted state without starting Pi", async () => {
     await bridge.handleClientMessage({
       type: "command",
       command: "open_session",
       payload: { path: "/tmp/pi/s1.jsonl" }
     });
 
-    expect(process.starts).toEqual([{ session: "/tmp/pi/s1.jsonl", sessionDir: "/tmp/pi" }]);
-    expect(process.sent).toEqual([
-      { type: "get_messages", id: "hydrate-1-messages" },
-      { type: "get_state", id: "hydrate-1-state" }
-    ]);
+    expect(openSession).toHaveBeenCalledWith("/tmp/pi/s1.jsonl", "/tmp/pi");
+    expect(process.starts).toEqual([]);
+    expect(process.sent).toEqual([]);
+    expect(sent).toContainEqual({
+      source: "pi",
+      type: "response",
+      response: {
+        id: "hydrate-1-messages",
+        type: "response",
+        command: "get_messages",
+        success: true,
+        data: { messages: [{ role: "user", content: "saved hello" }] }
+      }
+    });
+    expect(sent).toContainEqual({
+      source: "pi",
+      type: "response",
+      response: {
+        id: "hydrate-1-state",
+        type: "response",
+        command: "get_state",
+        success: true,
+        data: {
+          sessionId: "s1",
+          sessionFile: "/tmp/pi/s1.jsonl",
+          cwd: "/repo",
+          sessionName: "Existing session",
+          provider: "anthropic",
+          model: { provider: "anthropic", modelId: "claude-sonnet-4-5", id: "claude-sonnet-4-5" },
+          thinking: "medium",
+          thinkingLevel: "medium",
+          header: { type: "session", id: "s1", timestamp: "2026-05-16T00:00:00.000Z", cwd: "/repo" }
+        }
+      }
+    });
   });
 
   it("requires a path when opening a Pi-owned session", async () => {
@@ -89,7 +133,7 @@ describe("Pi session bridge", () => {
     expect(process.starts).toEqual([]);
   });
 
-  it("waits for Pi to switch before hydrating an already running runtime", async () => {
+  it("opens a persisted session without changing an already running runtime", async () => {
     await bridge.handleClientMessage({ type: "command", command: "prompt", payload: { message: "hello" } });
     process.sent.length = 0;
 
@@ -99,15 +143,13 @@ describe("Pi session bridge", () => {
       payload: { path: "/tmp/pi/s1.jsonl" }
     });
 
-    expect(process.sent).toEqual([{ type: "switch_session", sessionPath: "/tmp/pi/s1.jsonl", id: "session-1-switch" }]);
-
-    process.emit("pi-event", {
+    expect(openSession).toHaveBeenCalledWith("/tmp/pi/s1.jsonl", "/tmp/pi");
+    expect(process.starts).toEqual([{ sessionDir: "/tmp/pi" }]);
+    expect(process.sent).toEqual([]);
+    expect(sent).toContainEqual({
+      source: "pi",
       type: "response",
-      response: { id: "session-1-switch", type: "response", command: "switch_session", success: true, data: { cancelled: false } }
-    });
-
-    await vi.waitFor(() => {
-      expect(process.sent).toContainEqual({ type: "get_messages", id: "hydrate-1-messages" });
+      response: expect.objectContaining({ id: "hydrate-1-messages", command: "get_messages" })
     });
   });
 
@@ -129,7 +171,7 @@ describe("Pi session bridge", () => {
     expect(process.sent).toEqual([]);
   });
 
-  it("rehydrates the active session when Pi cancels a session switch", async () => {
+  it("does not report a cancellation when opening a saved session while Pi is running", async () => {
     await bridge.handleClientMessage({ type: "command", command: "prompt", payload: { message: "hello" } });
     process.sent.length = 0;
 
@@ -139,20 +181,8 @@ describe("Pi session bridge", () => {
       payload: { path: "/tmp/pi/s1.jsonl" }
     });
 
-    process.emit("pi-event", {
-      type: "response",
-      response: { id: "session-1-switch", type: "response", command: "switch_session", success: true, data: { cancelled: true } }
-    });
-
-    await vi.waitFor(() => {
-      expect(process.sent).toContainEqual({ type: "get_messages", id: "hydrate-1-messages" });
-    });
-    expect(sent).toContainEqual({
-      source: "bridge",
-      type: "session_cancelled",
-      command: "switch_session",
-      message: "Session switch cancelled."
-    });
+    expect(process.sent).toEqual([]);
+    expect(sent).not.toContainEqual(expect.objectContaining({ type: "session_cancelled" }));
   });
 
   it("rehydrates the active session when Pi cancels a new session", async () => {
@@ -176,7 +206,7 @@ describe("Pi session bridge", () => {
     });
   });
 
-  it("does not forward stale hydration responses", async () => {
+  it("uses a fresh bridge response id for each saved session open", async () => {
     await bridge.handleClientMessage({
       type: "command",
       command: "open_session",
@@ -188,40 +218,17 @@ describe("Pi session bridge", () => {
       payload: { path: "/tmp/pi/s2.jsonl" }
     });
 
-    process.emit("pi-event", {
-      type: "response",
-      response: {
-        id: "hydrate-1-messages",
-        type: "response",
-        command: "get_messages",
-        success: true,
-        data: { messages: [{ role: "user", content: "stale" }] }
-      }
-    });
-
-    expect(sent).not.toContainEqual({
+    expect(process.starts).toEqual([]);
+    expect(process.sent).toEqual([]);
+    expect(sent).toContainEqual({
       source: "pi",
       type: "response",
       response: expect.objectContaining({ id: "hydrate-1-messages" })
     });
-
-    process.emit("pi-event", {
+    expect(sent).toContainEqual({
+      source: "pi",
       type: "response",
-      response: {
-        id: "hydrate-2-messages",
-        type: "response",
-        command: "get_messages",
-        success: true,
-        data: { messages: [{ role: "user", content: "fresh" }] }
-      }
-    });
-
-    await vi.waitFor(() => {
-      expect(sent).toContainEqual({
-        source: "pi",
-        type: "response",
-        response: expect.objectContaining({ id: "hydrate-2-messages" })
-      });
+      response: expect.objectContaining({ id: "hydrate-2-messages" })
     });
   });
 

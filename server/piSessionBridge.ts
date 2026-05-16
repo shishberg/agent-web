@@ -1,3 +1,4 @@
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { createPiRpcCommand, PiProcess, type PiProcessEvent, type PiSessionConfig } from "./piProcess";
 import { listPiSessions, type PiSessionSummary } from "./piSessions";
 
@@ -10,23 +11,41 @@ export type PiProcessLike = {
   stop(): void;
 };
 
+type PersistedSessionContext = {
+  messages: unknown[];
+  model: unknown;
+  thinkingLevel?: string;
+};
+
+export type PersistedSessionReader = {
+  buildSessionContext(): PersistedSessionContext;
+  getSessionId(): string;
+  getSessionFile(): string | undefined;
+  getCwd(): string;
+  getSessionName(): string | undefined;
+  getHeader(): unknown;
+};
+
 export type PiSessionBridgeOptions = {
   cwd: string;
   sessionDir?: string;
   createPiProcess?: () => PiProcessLike;
   listSessions?: (cwd: string, sessionDir?: string) => Promise<PiSessionSummary[]>;
+  openSession?: (path: string, sessionDir?: string) => PersistedSessionReader;
   send: (message: unknown) => void;
 };
 
 export class PiSessionBridge {
   private readonly createPiProcess: () => PiProcessLike;
   private readonly listSessions: (cwd: string, sessionDir?: string) => Promise<PiSessionSummary[]>;
+  private readonly openPersistedSession: (path: string, sessionDir?: string) => PersistedSessionReader;
   private pi: PiProcessLike | null = null;
   private sessionVersion = 0;
 
   constructor(private readonly options: PiSessionBridgeOptions) {
     this.createPiProcess = options.createPiProcess ?? (() => new PiProcess());
     this.listSessions = options.listSessions ?? listPiSessions;
+    this.openPersistedSession = options.openSession ?? ((path, sessionDir) => SessionManager.open(path, sessionDir));
   }
 
   async handleClientMessage(message: ClientMessage): Promise<void> {
@@ -81,13 +100,13 @@ export class PiSessionBridge {
 
   private openSession(session: string): void {
     const version = this.beginSessionVersion();
-    if (!this.pi) {
-      this.ensurePi({ session });
-      this.hydrateActiveSession(version);
-      return;
+    try {
+      const persistedSession = this.openPersistedSession(session, this.options.sessionDir);
+      const context = persistedSession.buildSessionContext();
+      this.sendPersistedSessionHydration(version, persistedSession, context);
+    } catch (error) {
+      this.sendBridgeError(error instanceof Error ? error.message : String(error));
     }
-
-    this.sendPiCommand("switch_session", { sessionPath: session }, `session-${version}-switch`);
   }
 
   private hydrateActiveSession(version = this.beginSessionVersion()): void {
@@ -152,6 +171,47 @@ export class PiSessionBridge {
     this.pi?.send(rpcCommand);
   }
 
+  private sendPersistedSessionHydration(
+    version: number,
+    session: PersistedSessionReader,
+    context: PersistedSessionContext
+  ): void {
+    const model = hydratedModel(context.model);
+    this.options.send({
+      source: "pi",
+      type: "response",
+      response: {
+        id: `hydrate-${version}-messages`,
+        type: "response",
+        command: "get_messages",
+        success: true,
+        data: { messages: context.messages }
+      }
+    });
+
+    this.options.send({
+      source: "pi",
+      type: "response",
+      response: {
+        id: `hydrate-${version}-state`,
+        type: "response",
+        command: "get_state",
+        success: true,
+        data: {
+          sessionId: session.getSessionId(),
+          sessionFile: session.getSessionFile(),
+          cwd: session.getCwd(),
+          sessionName: session.getSessionName(),
+          provider: model.provider,
+          model: model.value,
+          thinking: context.thinkingLevel,
+          thinkingLevel: context.thinkingLevel,
+          header: session.getHeader()
+        }
+      }
+    });
+  }
+
   private beginSessionVersion(): number {
     this.sessionVersion += 1;
     return this.sessionVersion;
@@ -190,6 +250,20 @@ function currentBridgeVersion(response: Record<string, unknown>): number | null 
 function isCancelledSessionReplacement(response: Record<string, unknown>): boolean {
   const data = response.data;
   return isRecord(data) && data.cancelled === true;
+}
+
+function hydratedModel(model: unknown): { provider: unknown; value: unknown } {
+  if (!isRecord(model)) {
+    return { provider: undefined, value: model };
+  }
+
+  const provider = model.provider;
+  const modelId = model.modelId;
+  if (model.id !== undefined || typeof modelId !== "string") {
+    return { provider, value: model };
+  }
+
+  return { provider, value: { ...model, id: modelId } };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
