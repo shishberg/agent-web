@@ -734,6 +734,70 @@ pre {
   font-weight: 700;
 }
 
+.tool-detail summary {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.tool-summary-text {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: 8px;
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", monospace;
+  white-space: nowrap;
+}
+
+.tool-summary-name {
+  flex: 0 0 auto;
+  font-weight: 800;
+}
+
+.tool-summary-detail {
+  min-width: 0;
+  overflow: hidden;
+  color: #6b7280;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-status-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  margin-left: auto;
+  border-radius: 999px;
+}
+
+.tool-status-dot-running {
+  background: #f97316;
+}
+
+.tool-status-dot-done {
+  background: #22c55e;
+}
+
+.tool-status-dot-error {
+  background: #ef4444;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+:root[data-theme="dark"] .tool-summary-detail {
+  color: #9ca3af;
+}
+
 .inline-activity summary span:last-child {
   margin-left: auto;
 }

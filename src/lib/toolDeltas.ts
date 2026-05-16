@@ -1,8 +1,13 @@
 export type ToolDeltaGroup = {
   key: string;
   label: string;
+  detail?: string;
+  status?: ToolDeltaStatus;
+  statusLabel?: string;
   content: string;
 };
+
+export type ToolDeltaStatus = "running" | "done" | "error";
 
 export function groupToolDeltas(deltas: string[]): ToolDeltaGroup[] {
   const groups: InternalToolDeltaGroup[] = [];
@@ -20,19 +25,28 @@ export function groupToolDeltas(deltas: string[]): ToolDeltaGroup[] {
     }
 
     if (object) {
+      group.hasObject = true;
       group.name ||= toolName(object);
-      group.hasCommand ||= deltaHasCommand(object);
+      group.detail ||= toolDetail(object, group.name);
       group.completed ||= isToolCompletion(object);
+      group.failed ||= isToolFailure(object);
     }
 
     group.parts.push(formatToolDeltaValue(value));
   });
 
-  return groups.map((group) => ({
-    key: group.key,
-    label: toolGroupLabel(group),
-    content: group.parts.filter(Boolean).join("\n\n")
-  }));
+  return groups.map((group) => {
+    const status = toolGroupStatus(group);
+
+    return {
+      key: group.key,
+      label: toolGroupLabel(group),
+      detail: group.detail || undefined,
+      status,
+      statusLabel: toolGroupStatusLabel(status),
+      content: group.parts.filter(Boolean).join("\n\n")
+    };
+  });
 }
 
 export function rawToolDeltaId(object: Record<string, unknown>): string {
@@ -44,8 +58,10 @@ function createToolGroup(key: string, id: string): InternalToolDeltaGroup {
     key,
     id,
     name: "",
-    hasCommand: false,
+    detail: "",
+    hasObject: false,
     completed: false,
+    failed: false,
     parts: []
   };
 }
@@ -54,22 +70,59 @@ type InternalToolDeltaGroup = {
   key: string;
   id: string;
   name: string;
-  hasCommand: boolean;
+  detail: string;
+  hasObject: boolean;
   completed: boolean;
+  failed: boolean;
   parts: string[];
 };
 
 function toolGroupLabel(group: InternalToolDeltaGroup): string {
-  if (group.completed && (group.name === "bash" || group.hasCommand)) {
-    return "bash complete";
+  return group.name || "Tool call";
+}
+
+function toolGroupStatus(group: InternalToolDeltaGroup): ToolDeltaStatus | undefined {
+  if (!group.hasObject) {
+    return undefined;
   }
 
-  return group.name || "Tool call";
+  if (group.failed) {
+    return "error";
+  }
+
+  return group.completed ? "done" : "running";
+}
+
+function toolGroupStatusLabel(status: ToolDeltaStatus | undefined): string | undefined {
+  switch (status) {
+    case "running":
+      return "In progress";
+    case "done":
+      return "Complete";
+    case "error":
+      return "Error";
+    default:
+      return undefined;
+  }
 }
 
 function isToolCompletion(object: Record<string, unknown>): boolean {
   const type = typeof object.type === "string" ? object.type : "";
-  return type === "tool_execution_end" || type === "toolResult" || object.role === "toolResult";
+  return type === "tool_execution_end" || type === "toolResult" || type === "tool_result" || object.role === "toolResult";
+}
+
+function isToolFailure(object: Record<string, unknown>): boolean {
+  const result = objectField(object.result);
+  return (
+    object.isError === true ||
+    object.is_error === true ||
+    object.error === true ||
+    object.success === false ||
+    result?.isError === true ||
+    result?.is_error === true ||
+    result?.error === true ||
+    result?.success === false
+  );
 }
 
 function formatToolDeltaValue(value: unknown): string {
@@ -84,9 +137,39 @@ function toolName(object: Record<string, unknown>): string {
   return firstDisplayValue(object.toolName, object.tool_name, object.name, object.tool);
 }
 
-function deltaHasCommand(object: Record<string, unknown>): boolean {
-  const args = objectField(object.args) ?? objectField(object.input);
-  return typeof args?.command === "string" || typeof object.command === "string";
+function toolDetail(object: Record<string, unknown>, name: string): string {
+  if (name === "bash") {
+    return commandDetail(object);
+  }
+
+  return pathDetail(object) || commandDetail(object);
+}
+
+function commandDetail(object: Record<string, unknown>): string {
+  const args = objectField(object.args);
+  const input = objectField(object.input);
+  const argumentsValue = objectField(object.arguments);
+  return firstString(args?.command, input?.command, argumentsValue?.command, object.command);
+}
+
+function pathDetail(object: Record<string, unknown>): string {
+  const args = objectField(object.args);
+  const input = objectField(object.input);
+  const argumentsValue = objectField(object.arguments);
+  return firstString(
+    object.path,
+    object.file_path,
+    object.filePath,
+    args?.path,
+    args?.file_path,
+    args?.filePath,
+    input?.path,
+    input?.file_path,
+    input?.filePath,
+    argumentsValue?.path,
+    argumentsValue?.file_path,
+    argumentsValue?.filePath
+  );
 }
 
 function firstDisplayValue(...values: unknown[]): string {

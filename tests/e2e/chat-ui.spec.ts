@@ -40,6 +40,80 @@ test("keeps Pi sessions in the sidebar without a user-facing connect action", as
   await expect(page.getByRole("button", { name: /Connect|Disconnect/ })).toHaveCount(0);
 });
 
+test("renders enriched collapsed tool call summaries", async ({ page }) => {
+  let wsRoute: { send: (message: string) => void } | undefined;
+
+  await page.routeWebSocket("/rpc", (ws) => {
+    wsRoute = ws;
+    ws.onMessage((message) => {
+      const payload = JSON.parse(typeof message === "string" ? message : message.toString()) as { command?: string };
+      if (payload.command === "list_sessions") {
+        ws.send(JSON.stringify({ source: "bridge", type: "sessions", sessions: [] }));
+      }
+    });
+  });
+
+  await page.goto("/");
+  await expect.poll(() => Boolean(wsRoute)).toBe(true);
+
+  const command = "npm test -- tests/toolDeltas.test.ts --long-summary-command-that-should-truncate-in-css";
+  wsRoute?.send(
+    JSON.stringify({
+      source: "pi",
+      type: "response",
+      response: {
+        type: "response",
+        command: "get_messages",
+        success: true,
+        data: {
+          messages: [
+            {
+              id: "a1",
+              role: "assistant",
+              content: [
+                { type: "text", text: "Done" },
+                { type: "toolCall", id: "call_1", name: "bash", arguments: { command } }
+              ]
+            },
+            {
+              role: "toolResult",
+              toolCallId: "call_1",
+              toolName: "bash",
+              content: [{ type: "text", text: "ok" }],
+              isError: false
+            }
+          ]
+        }
+      }
+    })
+  );
+
+  const summary = page.locator(".tool-detail summary").first();
+  await expect(summary).toContainText("bash");
+  await expect(summary).toContainText(command);
+  await expect(summary).toContainText("Complete");
+
+  const summaryText = summary.locator(".tool-summary-text");
+  await expect
+    .poll(() =>
+      summaryText.evaluate((element) => {
+        const style = getComputedStyle(element);
+        return {
+          fontFamily: style.fontFamily,
+          overflowX: style.overflowX,
+          whiteSpace: style.whiteSpace
+        };
+      })
+    )
+    .toEqual(expect.objectContaining({ overflowX: "hidden", whiteSpace: "nowrap" }));
+  await expect(summaryText).toHaveCSS("font-family", /monospace/);
+  await expect(summary.locator(".tool-summary-detail")).toHaveCSS("text-overflow", "ellipsis");
+
+  const dot = summary.locator(".tool-status-dot");
+  await expect(dot).toHaveAttribute("title", "Complete");
+  await expect(dot).toHaveCSS("background-color", "rgb(34, 197, 94)");
+});
+
 test("shows saved-session loading, metadata, and message copy controls", async ({ page }) => {
   await page.addInitScript(() => {
     const clipboardStore = { value: "" };

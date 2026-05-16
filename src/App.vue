@@ -521,7 +521,20 @@ async function scrollMessagesToEnd() {
                 <pre>{{ message.thinking }}</pre>
               </details>
               <details v-for="tool in groupToolDeltas(message.toolDeltas)" :key="`${message.id}-${tool.key}`" class="thinking tool-detail">
-                <summary>{{ tool.label }}</summary>
+                <summary>
+                  <span class="tool-summary-text">
+                    <span class="tool-summary-name">{{ tool.label }}</span>
+                    <span v-if="tool.detail" class="tool-summary-detail">{{ tool.detail }}</span>
+                    <span v-if="tool.statusLabel" class="visually-hidden">, {{ tool.statusLabel }}</span>
+                  </span>
+                  <span
+                    v-if="tool.status"
+                    class="tool-status-dot"
+                    :class="`tool-status-dot-${tool.status}`"
+                    :title="tool.statusLabel"
+                    aria-hidden="true"
+                  ></span>
+                </summary>
                 <pre>{{ tool.content }}</pre>
               </details>
               <div
