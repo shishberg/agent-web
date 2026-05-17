@@ -153,7 +153,8 @@ pre {
 
 .session-list {
   min-height: 0;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   display: grid;
   align-content: start;
   gap: 2px;
@@ -161,13 +162,16 @@ pre {
 }
 
 .session-item {
+  display: grid;
+  gap: 3px;
   width: 100%;
-  min-height: 38px;
+  min-width: 0;
+  min-height: 52px;
   border: 0;
   border-radius: 8px;
   background: transparent;
   color: #4b5563;
-  padding: 0 12px;
+  padding: 8px 12px;
   text-align: left;
 }
 
@@ -181,11 +185,20 @@ pre {
   font-weight: 650;
 }
 
-.session-item span {
+.session-prompt {
   display: block;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.session-date {
+  display: block;
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.2;
 }
 
 .session-empty {
@@ -205,6 +218,10 @@ pre {
 :root[data-theme="dark"] .session-item.active {
   background: #1f2937;
   color: #f9fafb;
+}
+
+:root[data-theme="dark"] .session-date {
+  color: #6b7280;
 }
 
 .profile-row {

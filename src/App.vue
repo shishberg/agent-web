@@ -504,6 +504,39 @@ function titleFromPrompt(message: string): string {
   return title.length > 34 ? `${title.slice(0, 34)}...` : title || "New chat";
 }
 
+function sessionPrompt(item: PiSessionSummary): string {
+  return (item.firstMessage || item.title).replace(/\s+/g, " ").trim() || "Untitled session";
+}
+
+function formatSessionTimestamp(item: PiSessionSummary): string {
+  const timestamp = item.modified || item.created;
+  if (!timestamp) return "";
+
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return "";
+
+  const now = new Date();
+  const time = `${padTimePart(date.getHours())}:${padTimePart(date.getMinutes())}`;
+  if (date.toDateString() === now.toDateString()) {
+    return time;
+  }
+
+  const dayAndMonth = `${date.getDate()} ${shortMonthName(date.getMonth())}`;
+  if (date.getFullYear() === now.getFullYear()) {
+    return `${dayAndMonth} ${time}`;
+  }
+
+  return `${dayAndMonth} ${date.getFullYear()} ${time}`;
+}
+
+function padTimePart(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+function shortMonthName(month: number): string {
+  return ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][month] ?? "";
+}
+
 function readThemePreference(): ThemePreference {
   const stored = localStorage.getItem("agent-web-theme");
   return stored === "light" || stored === "dark" || stored === "system" ? stored : "system";
@@ -551,11 +584,12 @@ async function scrollMessagesToEnd() {
           class="session-item"
           :class="{ active: item.id === activeSessionId }"
           type="button"
-          :aria-label="`Chat session: ${item.title}`"
+          :aria-label="`Chat session: ${sessionPrompt(item)}`"
           :aria-current="item.id === activeSessionId ? 'page' : undefined"
           @click="selectChat(item.id)"
         >
-          <span>{{ item.title }}</span>
+          <span class="session-prompt" :title="sessionPrompt(item)">{{ sessionPrompt(item) }}</span>
+          <span class="session-date">{{ formatSessionTimestamp(item) }}</span>
         </button>
         <p v-if="piSessions.length === 0" class="session-empty">No saved sessions</p>
       </nav>
