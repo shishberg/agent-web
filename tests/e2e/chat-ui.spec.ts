@@ -117,6 +117,48 @@ test("renders enriched collapsed tool call summaries", async ({ page }) => {
   await expect(dot).toHaveCSS("background-color", "rgb(34, 197, 94)");
 });
 
+test("sends active-turn composer input as queued prompts", async ({ page }) => {
+  const commands: { command?: string; payload?: unknown }[] = [];
+  let wsRoute: { send: (message: string) => void } | undefined;
+
+  await page.routeWebSocket("/rpc", (ws) => {
+    wsRoute = ws;
+    ws.onMessage((message) => {
+      const payload = JSON.parse(typeof message === "string" ? message : message.toString()) as {
+        command?: string;
+        payload?: unknown;
+      };
+      commands.push(payload);
+      if (payload.command === "list_sessions") {
+        ws.send(JSON.stringify({ source: "bridge", type: "sessions", sessions: [] }));
+      }
+    });
+  });
+
+  await page.goto("/");
+  await expect.poll(() => Boolean(wsRoute)).toBe(true);
+  wsRoute?.send(
+    JSON.stringify({
+      source: "pi",
+      type: "event",
+      event: { type: "turn_start" }
+    })
+  );
+
+  await page.getByRole("textbox", { name: "Message prompt" }).fill("Adjust this");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await expect
+    .poll(() => commands.find((entry) => entry.command === "prompt" && (entry.payload as { message?: string })?.message === "Adjust this"))
+    .toEqual({
+      type: "command",
+      command: "prompt",
+      payload: { message: "Adjust this", queueMode: "steer" }
+    });
+  expect(commands).not.toContainEqual(expect.objectContaining({ command: "steer" }));
+  expect(commands).not.toContainEqual(expect.objectContaining({ command: "follow_up" }));
+});
+
 test("shows saved-session loading, metadata, and message copy controls", async ({ page }) => {
   await page.addInitScript(() => {
     const clipboardStore = { value: "" };
@@ -253,6 +295,7 @@ test("shows saved-session loading, metadata, and message copy controls", async (
   await page.getByRole("button", { name: "Send" }).click();
   await expect.poll(() => promptPayload).toEqual({
     message: "Follow up",
+    queueMode: "steer",
     sessionPath: "/tmp/pi/saved-session.jsonl"
   });
 

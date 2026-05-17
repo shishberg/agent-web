@@ -251,18 +251,15 @@ function sendPrompt() {
     draftTitle.value = titleFromPrompt(message);
   }
 
-  if (session.turnActive) {
-    client.command(queueMode.value, payload);
-  } else {
-    client.command("prompt", payload);
-  }
+  client.command("prompt", payload);
 
   prompt.value = "";
 }
 
 function promptPayload(message: string): Record<string, unknown> {
   const sessionPath = activePiSession.value?.path;
-  return sessionPath ? { message, sessionPath } : { message };
+  const payload: Record<string, unknown> = { message, queueMode: queueMode.value };
+  return sessionPath ? { ...payload, sessionPath } : payload;
 }
 
 function respondToExtension(request: ExtensionRequest, accepted: boolean) {

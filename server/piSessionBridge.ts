@@ -95,14 +95,10 @@ export class PiSessionBridge {
     if (message.command === "prompt") {
       const target = this.runnerTarget(message.payload);
       const existingRunner = this.runners.get(target.key);
-      if (existingRunner?.activeTurn) {
-        this.sendBridgeError("A turn is already active for this session.");
-        return;
-      }
-
       const runner = existingRunner ?? this.ensureRunner(target);
+      const activeTurn = runner.activeTurn;
       runner.activeTurn = true;
-      this.sendPiCommand(runner, message.command, commandPayload(message.payload));
+      this.sendPiCommand(runner, message.command, promptPayload(message.payload, activeTurn));
       return;
     }
 
@@ -325,8 +321,25 @@ function commandPayload(payload: Record<string, unknown> | undefined): Record<st
     return {};
   }
 
-  const { sessionPath: _sessionPath, path: _path, ...rest } = payload;
+  const { sessionPath: _sessionPath, path: _path, queueMode: _queueMode, ...rest } = payload;
   return rest;
+}
+
+function promptPayload(payload: Record<string, unknown> | undefined, activeTurn: boolean): Record<string, unknown> {
+  const piPayload = commandPayload(payload);
+  if (!activeTurn) {
+    return piPayload;
+  }
+
+  return {
+    ...piPayload,
+    streamingBehavior: promptStreamingBehavior(payload)
+  };
+}
+
+function promptStreamingBehavior(payload: Record<string, unknown> | undefined): "steer" | "followUp" {
+  const queueMode = stringPayload(payload, "queueMode");
+  return queueMode === "follow_up" || queueMode === "followUp" ? "followUp" : "steer";
 }
 
 function defaultRunnerKey(): string {

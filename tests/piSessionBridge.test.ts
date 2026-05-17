@@ -139,7 +139,7 @@ describe("Pi session bridge", () => {
     expect(processes[1].sent).toEqual([{ type: "prompt", message: "second" }]);
   });
 
-  it("rejects a second prompt for the same saved session while a turn is active", async () => {
+  it("steers a second prompt for the same saved session while a turn is active", async () => {
     await bridge.handleClientMessage({
       type: "command",
       command: "prompt",
@@ -152,12 +152,30 @@ describe("Pi session bridge", () => {
     });
 
     expect(processes).toHaveLength(1);
-    expect(process.sent).toEqual([{ type: "prompt", message: "first" }]);
-    expect(sent).toContainEqual({
-      source: "bridge",
-      type: "error",
-      message: "A turn is already active for this session."
+    expect(process.sent).toEqual([
+      { type: "prompt", message: "first" },
+      { type: "prompt", message: "second", streamingBehavior: "steer" }
+    ]);
+    expect(sent).not.toContainEqual(expect.objectContaining({ source: "bridge", type: "error" }));
+  });
+
+  it.each(["follow_up", "followUp"])("maps %s queue mode to Pi prompt streaming behavior", async (queueMode) => {
+    await bridge.handleClientMessage({
+      type: "command",
+      command: "prompt",
+      payload: { message: "first", sessionPath: "/tmp/pi/s1.jsonl" }
     });
+    await bridge.handleClientMessage({
+      type: "command",
+      command: "prompt",
+      payload: { message: "second", sessionPath: "/tmp/pi/s1.jsonl", queueMode }
+    });
+
+    expect(processes).toHaveLength(1);
+    expect(process.sent).toEqual([
+      { type: "prompt", message: "first" },
+      { type: "prompt", message: "second", streamingBehavior: "followUp" }
+    ]);
   });
 
   it("accepts another prompt for the same saved session after turn_end", async () => {
