@@ -159,6 +159,119 @@ test("sends active-turn composer input as queued prompts", async ({ page }) => {
   expect(commands).not.toContainEqual(expect.objectContaining({ command: "follow_up" }));
 });
 
+test("binds draft chat only from an authoritative saved-session response", async ({ page }) => {
+  const commands: { command?: string; payload?: unknown }[] = [];
+  let wsRoute: { send: (message: string) => void } | undefined;
+  const sessionPath = "/tmp/pi/draft-session.jsonl";
+
+  await page.routeWebSocket("/rpc", (ws) => {
+    wsRoute = ws;
+    ws.onMessage((message) => {
+      const payload = JSON.parse(typeof message === "string" ? message : message.toString()) as {
+        command?: string;
+        payload?: unknown;
+      };
+      commands.push(payload);
+      if (payload.command === "list_sessions") {
+        ws.send(JSON.stringify({ source: "bridge", type: "sessions", sessions: [] }));
+      }
+    });
+  });
+
+  await page.goto("/");
+  await expect.poll(() => Boolean(wsRoute)).toBe(true);
+
+  await page.getByRole("textbox", { name: "Message prompt" }).fill("Start draft");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await expect
+    .poll(() => commands.find((entry) => entry.command === "prompt" && (entry.payload as { message?: string })?.message === "Start draft"))
+    .toEqual({
+      type: "command",
+      command: "prompt",
+      payload: { message: "Start draft", queueMode: "steer" }
+    });
+
+  wsRoute?.send(
+    JSON.stringify({
+      source: "pi",
+      sessionPath: "/tmp/pi/old.jsonl",
+      type: "event",
+      event: { type: "message_start", role: "assistant" }
+    })
+  );
+  wsRoute?.send(
+    JSON.stringify({
+      source: "pi",
+      sessionPath: "/tmp/pi/old.jsonl",
+      type: "response",
+      response: {
+        type: "response",
+        command: "get_messages",
+        success: true,
+        data: { messages: [{ id: "old", role: "assistant", content: "Old saved answer" }] }
+      }
+    })
+  );
+
+  await expect(page.getByText("Old saved answer")).toHaveCount(0);
+
+  await page.getByRole("textbox", { name: "Message prompt" }).fill("Still draft");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await expect
+    .poll(() => commands.find((entry) => entry.command === "prompt" && (entry.payload as { message?: string })?.message === "Still draft"))
+    .toEqual({
+      type: "command",
+      command: "prompt",
+      payload: { message: "Still draft", queueMode: "steer" }
+    });
+
+  wsRoute?.send(
+    JSON.stringify({
+      source: "pi",
+      sessionPath,
+      type: "response",
+      response: {
+        type: "response",
+        command: "get_state",
+        success: true,
+        data: {
+          sessionId: "draft-session-id",
+          sessionFile: sessionPath,
+          sessionName: "Draft session"
+        }
+      }
+    })
+  );
+  wsRoute?.send(
+    JSON.stringify({
+      source: "pi",
+      sessionPath,
+      type: "response",
+      response: {
+        type: "response",
+        command: "get_messages",
+        success: true,
+        data: { messages: [{ id: "a1", role: "assistant", content: "Bound draft answer" }] }
+      }
+    })
+  );
+
+  await expect(page.getByText("Bound draft answer")).toBeVisible();
+
+  await page.getByRole("textbox", { name: "Message prompt" }).fill("Follow up");
+  await page.getByRole("button", { name: "Send" }).click();
+
+  await expect
+    .poll(() => commands.find((entry) => entry.command === "prompt" && (entry.payload as { message?: string })?.message === "Follow up"))
+    .toEqual({
+      type: "command",
+      command: "prompt",
+      payload: { message: "Follow up", queueMode: "steer", sessionPath }
+    });
+});
+
 test("shows saved-session loading, metadata, and message copy controls", async ({ page }) => {
   await page.addInitScript(() => {
     const clipboardStore = { value: "" };

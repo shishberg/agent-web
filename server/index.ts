@@ -5,7 +5,8 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
 import { createServer as createViteServer, type ViteDevServer } from "vite";
 import { isAllowedOrigin } from "./origin";
-import { PiSessionBridge, type ClientMessage } from "./piSessionBridge";
+import { RunnerClient } from "./runnerClient";
+import type { BrowserClientMessage } from "./runnerProtocol";
 
 export const DEFAULT_PORT = 4177;
 
@@ -15,6 +16,9 @@ const port = Number(process.env.PORT ?? DEFAULT_PORT);
 const host = process.env.HOST ?? "127.0.0.1";
 
 let vite: ViteDevServer | null = null;
+let nextClientId = 1;
+const clientIdPrefix = `web-${process.pid}-${Math.random().toString(36).slice(2)}`;
+const runnerClient = new RunnerClient();
 
 const server = createServer(async (req, res) => {
   if (!req.url || req.url.startsWith("/rpc")) {
@@ -63,16 +67,8 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 wss.on("connection", (socket) => {
-  const send = (message: unknown) => {
-    if (socket.readyState === socket.OPEN) {
-      socket.send(JSON.stringify(message));
-    }
-  };
-  const bridge = new PiSessionBridge({
-    cwd: root,
-    sessionDir: process.env.PI_CODING_AGENT_SESSION_DIR,
-    send
-  });
+  const clientId = `${clientIdPrefix}-${nextClientId++}`;
+  runnerClient.attachBrowserSocket(clientId, socket);
 
   socket.on("message", (raw) => {
     const parsed = parseClientMessage(raw.toString(), socket);
@@ -80,18 +76,17 @@ wss.on("connection", (socket) => {
       return;
     }
 
-    void bridge.handleClientMessage(parsed);
+    runnerClient.sendBrowserMessage(clientId, parsed);
   });
 
-  socket.on("close", () => bridge.dispose());
-  send({ source: "bridge", type: "ready" });
+  socket.on("close", () => runnerClient.detachBrowserSocket(clientId));
 });
 
 server.listen(port, host, () => {
   console.log(`Pi agent web listening on http://${host}:${port}`);
 });
 
-function parseClientMessage(raw: string, socket: WebSocket): ClientMessage | null {
+function parseClientMessage(raw: string, socket: WebSocket): BrowserClientMessage | null {
   let value: unknown;
   try {
     value = JSON.parse(raw);
@@ -108,7 +103,7 @@ function parseClientMessage(raw: string, socket: WebSocket): ClientMessage | nul
   return value;
 }
 
-function isClientMessage(value: unknown): value is ClientMessage {
+function isClientMessage(value: unknown): value is BrowserClientMessage {
   if (!isRecord(value) || typeof value.type !== "string") {
     return false;
   }

@@ -27,6 +27,7 @@ type SessionRuntimeMetadata = {
 let systemThemeQuery: MediaQueryList | null = null;
 const piSessions = ref<PiSessionSummary[]>([]);
 const activeSessionId = ref<string | null>(null);
+const draftSessionPath = ref<string | null>(null);
 const draftTitle = ref("New chat");
 const session = reactive<SessionState>(createInitialSessionState());
 const prompt = ref("");
@@ -183,6 +184,7 @@ function disconnect() {
 function newChat() {
   isSessionLoading.value = false;
   activeSessionId.value = null;
+  draftSessionPath.value = null;
   draftTitle.value = "New chat";
   clearSessionRuntime();
   hydrateSessionMessages(session, []);
@@ -196,6 +198,7 @@ function selectChat(id: string) {
   if (!item) return;
 
   activeSessionId.value = id;
+  draftSessionPath.value = null;
   draftTitle.value = item.title;
   isSessionLoading.value = true;
   clearSessionRuntime();
@@ -267,7 +270,7 @@ function sendPrompt() {
 }
 
 function promptPayload(message: string): Record<string, unknown> {
-  const sessionPath = activePiSession.value?.path;
+  const sessionPath = activePiSession.value?.path ?? draftSessionPath.value;
   const payload: Record<string, unknown> = { message, queueMode: queueMode.value };
   return sessionPath ? { ...payload, sessionPath } : payload;
 }
@@ -317,6 +320,7 @@ function handleBridgeMessage(message: BridgeMessage) {
   if (!isActivePiMessage(message)) {
     return;
   }
+  bindDraftSessionPath(message);
 
   if (message.type === "status") {
     const hadError = status.value === "error";
@@ -354,15 +358,49 @@ function handleBridgeMessage(message: BridgeMessage) {
 
 function isActivePiMessage(message: Extract<BridgeMessage, { source: "pi" }>): boolean {
   const activePath = activePiSession.value?.path;
-  if (message.sessionPath) {
+  if (activePath) {
     return message.sessionPath === activePath;
   }
 
-  return !activePath;
+  const draftPath = draftSessionPath.value;
+  if (message.sessionPath) {
+    return draftPath ? message.sessionPath === draftPath : Boolean(authoritativeDraftSessionPath(message));
+  }
+
+  return true;
+}
+
+function bindDraftSessionPath(message: Extract<BridgeMessage, { source: "pi" }>) {
+  if (activePiSession.value?.path || draftSessionPath.value) {
+    return;
+  }
+
+  const sessionPath = authoritativeDraftSessionPath(message);
+  if (sessionPath) {
+    draftSessionPath.value = sessionPath;
+  }
 }
 
 function piEventWithSessionPath(event: Record<string, unknown>, sessionPath: string | undefined): Record<string, unknown> {
   return sessionPath ? { ...event, sessionPath } : event;
+}
+
+function sessionPathFromResponse(response: Record<string, unknown>): string {
+  const data = objectField(response.data);
+  const session = objectField(data?.session);
+  return firstString(response.sessionFile, response.sessionPath, data?.sessionFile, data?.sessionPath, session?.sessionFile, session?.sessionPath);
+}
+
+function authoritativeDraftSessionPath(message: Extract<BridgeMessage, { source: "pi" }>): string {
+  if (message.type !== "response" || message.response.success === false) {
+    return "";
+  }
+
+  if (!["get_state", "new_session", "switch_session"].includes(String(message.response.command))) {
+    return "";
+  }
+
+  return sessionPathFromResponse(message.response);
 }
 
 function applyPiResponse(response: Record<string, unknown>) {
@@ -437,6 +475,16 @@ function looksLikeUuid(value: string): boolean {
 
 function objectField(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+function firstString(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === "string" && value) {
+      return value;
+    }
+  }
+
+  return "";
 }
 
 function prefillEditorPrompt(event: Record<string, unknown>) {

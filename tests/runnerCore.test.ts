@@ -217,6 +217,227 @@ describe("Pi runner core", () => {
     expect(process.sent).toEqual([{ type: "extension_ui_response", id: "ext-1", value: "yes" }]);
   });
 
+  it("reuses a new-session runner after Pi reports the saved session file", async () => {
+    await core.handleClientMessage({ type: "command", command: "new_session" });
+
+    process.emit("pi-event", {
+      type: "response",
+      response: {
+        id: "session-1-new",
+        type: "response",
+        command: "new_session",
+        success: true,
+        data: { sessionFile: "/tmp/pi/s1.jsonl" }
+      }
+    });
+    process.sent.length = 0;
+
+    await core.handleClientMessage({
+      type: "command",
+      command: "prompt",
+      payload: { message: "saved follow-up", sessionPath: "/tmp/pi/s1.jsonl" }
+    });
+
+    expect(processes).toHaveLength(1);
+    expect(process.sent).toEqual([{ type: "prompt", message: "saved follow-up" }]);
+  });
+
+  it("stops a runner that reports a session path already owned by another runner", async () => {
+    const sentWithMetadata: Array<{ message: unknown; metadata: unknown }> = [];
+    core = new PiRunnerCore({
+      cwd: "/repo",
+      sessionDir: "/tmp/pi",
+      createPiProcess: () => {
+        const nextProcess = processes.find((candidate) => candidate.starts.length === 0 && candidate.sent.length === 0);
+        if (nextProcess) {
+          return nextProcess;
+        }
+        const created = new FakePiProcess();
+        processes.push(created);
+        return created;
+      },
+      listSessions,
+      openSession,
+      send: (message, metadata) => sentWithMetadata.push({ message, metadata })
+    });
+
+    await core.handleClientMessage({
+      type: "command",
+      command: "prompt",
+      payload: { message: "original", sessionPath: "/tmp/pi/s1.jsonl" }
+    });
+    await core.handleClientMessage({ type: "command", command: "new_session" });
+
+    processes[1].emit("pi-event", {
+      type: "response",
+      response: {
+        id: "session-1-new",
+        type: "response",
+        command: "new_session",
+        success: true,
+        data: { sessionFile: "/tmp/pi/s1.jsonl" }
+      }
+    });
+
+    expect(processes[1].stopped).toBe(true);
+    expect(sentWithMetadata).toContainEqual({
+      message: {
+        source: "bridge",
+        type: "error",
+        message: "Session path is already active: /tmp/pi/s1.jsonl."
+      },
+      metadata: { runnerKey: "default" }
+    });
+
+    await core.handleClientMessage({
+      type: "command",
+      command: "prompt",
+      payload: { message: "still original", sessionPath: "/tmp/pi/s1.jsonl" }
+    });
+
+    expect(processes[0].sent).toEqual([
+      { type: "prompt", message: "original" },
+      { type: "prompt", message: "still original", streamingBehavior: "steer" }
+    ]);
+    expect(processes[1].sent).toEqual([{ type: "new_session", id: "session-1-new" }]);
+  });
+
+  it("ignores late events from a runner stopped by a session path collision", async () => {
+    const sentWithMetadata: Array<{ message: unknown; metadata: unknown }> = [];
+    core = new PiRunnerCore({
+      cwd: "/repo",
+      sessionDir: "/tmp/pi",
+      createPiProcess: () => {
+        const nextProcess = processes.find((candidate) => candidate.starts.length === 0 && candidate.sent.length === 0);
+        if (nextProcess) {
+          return nextProcess;
+        }
+        const created = new FakePiProcess();
+        processes.push(created);
+        return created;
+      },
+      listSessions,
+      openSession,
+      send: (message, metadata) => sentWithMetadata.push({ message, metadata })
+    });
+
+    await core.handleClientMessage({
+      type: "command",
+      command: "prompt",
+      payload: { message: "original", sessionPath: "/tmp/pi/s1.jsonl" }
+    });
+    await core.handleClientMessage({ type: "command", command: "new_session" });
+    processes[1].emit("pi-event", {
+      type: "response",
+      response: {
+        id: "session-1-new",
+        type: "response",
+        command: "new_session",
+        success: true,
+        data: { sessionFile: "/tmp/pi/s1.jsonl" }
+      }
+    });
+    sentWithMetadata.length = 0;
+
+    processes[1].emit("pi-event", { type: "event", event: { type: "message_start", role: "assistant" } });
+    processes[1].emit("pi-event", { type: "status", status: "exited", code: 0, signal: null });
+
+    expect(sentWithMetadata).toEqual([]);
+  });
+
+  it("starts a fresh saved-session runner after an aliased new-session runner exits", async () => {
+    await core.handleClientMessage({ type: "command", command: "new_session" });
+    process.emit("pi-event", {
+      type: "response",
+      response: {
+        id: "session-1-new",
+        type: "response",
+        command: "new_session",
+        success: true,
+        data: { sessionFile: "/tmp/pi/s1.jsonl" }
+      }
+    });
+    process.emit("pi-event", { type: "status", status: "exited", code: 0, signal: null });
+
+    await core.handleClientMessage({
+      type: "command",
+      command: "prompt",
+      payload: { message: "after exit", sessionPath: "/tmp/pi/s1.jsonl" }
+    });
+
+    expect(processes).toHaveLength(2);
+    expect(processes[1].starts).toEqual([{ session: "/tmp/pi/s1.jsonl", sessionDir: "/tmp/pi" }]);
+    expect(processes[1].sent).toEqual([{ type: "prompt", message: "after exit" }]);
+  });
+
+  it("drops stale saved-session aliases when a warm runner reports a new session file", async () => {
+    await core.handleClientMessage({ type: "command", command: "new_session" });
+    process.emit("pi-event", {
+      type: "response",
+      response: {
+        id: "session-1-new",
+        type: "response",
+        command: "new_session",
+        success: true,
+        data: { sessionFile: "/tmp/pi/s1.jsonl" }
+      }
+    });
+    await core.handleClientMessage({ type: "command", command: "new_session" });
+    process.emit("pi-event", {
+      type: "response",
+      response: {
+        id: "session-2-new",
+        type: "response",
+        command: "new_session",
+        success: true,
+        data: { sessionFile: "/tmp/pi/s2.jsonl" }
+      }
+    });
+
+    await core.handleClientMessage({
+      type: "command",
+      command: "prompt",
+      payload: { message: "back to first", sessionPath: "/tmp/pi/s1.jsonl" }
+    });
+
+    expect(processes).toHaveLength(2);
+    expect(processes[1].starts).toEqual([{ session: "/tmp/pi/s1.jsonl", sessionDir: "/tmp/pi" }]);
+    expect(processes[1].sent).toEqual([{ type: "prompt", message: "back to first" }]);
+  });
+
+  it("sends runner metadata with Pi events", async () => {
+    const metadataSent: Array<{ message: unknown; metadata: unknown }> = [];
+    core = new PiRunnerCore({
+      cwd: "/repo",
+      sessionDir: "/tmp/pi",
+      createPiProcess: () => process,
+      listSessions,
+      openSession,
+      send: (message, metadata) => metadataSent.push({ message, metadata })
+    });
+
+    await core.handleClientMessage({
+      type: "command",
+      command: "prompt",
+      payload: { message: "saved hello", sessionPath: "/tmp/pi/s1.jsonl" }
+    });
+
+    process.emit("pi-event", {
+      type: "event",
+      event: { type: "extension_ui_request", id: "ext-1", method: "set_editor_text" }
+    });
+
+    expect(metadataSent).toContainEqual({
+      message: {
+        source: "pi",
+        sessionPath: "/tmp/pi/s1.jsonl",
+        type: "event",
+        event: { type: "extension_ui_request", id: "ext-1", method: "set_editor_text" }
+      },
+      metadata: { runnerKey: "path:/tmp/pi/s1.jsonl", sessionPath: "/tmp/pi/s1.jsonl" }
+    });
+  });
+
   it("opens a saved session without sending to an active path runner", async () => {
     await core.handleClientMessage({
       type: "command",

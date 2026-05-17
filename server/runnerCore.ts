@@ -12,6 +12,12 @@ export type PiProcessLike = {
   stop(): void;
 };
 
+export type RunnerOutputMetadata = {
+  topic?: "sessions";
+  runnerKey?: string;
+  sessionPath?: string;
+};
+
 type PersistedSessionContext = {
   messages: unknown[];
   model: unknown;
@@ -49,7 +55,7 @@ export type PiRunnerCoreOptions = {
   createPiProcess?: () => PiProcessLike;
   listSessions?: (cwd: string, sessionDir?: string) => Promise<PiSessionSummary[]>;
   openSession?: (path: string, sessionDir?: string) => PersistedSessionReader;
-  send: (message: unknown) => void;
+  send: (message: unknown, metadata?: RunnerOutputMetadata) => void;
   disconnectBehavior?: DisconnectBehavior;
 };
 
@@ -91,9 +97,9 @@ export class PiRunnerCore {
     }
 
     if (message.command === "new_session") {
-      const runner = this.ensureRunner({ key: defaultRunnerKey(), config: {} });
+      const runner = this.ensureRunner(this.runnerTarget(message.payload));
       const version = this.beginRunnerSessionVersion(runner);
-      this.sendPiCommand(runner, "new_session", message.payload, `session-${version}-new`);
+      this.sendPiCommand(runner, "new_session", commandPayload(message.payload), `session-${version}-new`);
       return;
     }
 
@@ -121,7 +127,7 @@ export class PiRunnerCore {
   }
 
   dispose(): void {
-    for (const runner of this.runners.values()) {
+    for (const runner of new Set(this.runners.values())) {
       runner.pi.stop();
     }
     this.runners.clear();
@@ -158,17 +164,30 @@ export class PiRunnerCore {
   }
 
   private async handlePiEvent(runner: PiRunner, event: PiProcessEvent): Promise<void> {
+    if (!this.isRunnerRegistered(runner)) {
+      return;
+    }
+
     if (event.type === "response" && isRecord(event.response)) {
       if (this.isStaleRunnerResponse(runner, event.response)) {
         return;
       }
 
-      this.options.send(piBridgeMessage(runner.sessionPath, event));
+      if (!this.aliasRunnerSessionPath(runner, sessionPathFromPiPayload(event.response))) {
+        return;
+      }
+      this.sendWithMetadata(piBridgeMessage(runner.sessionPath, event), runner);
       await this.handlePiResponse(runner, event.response);
       return;
     }
 
-    this.options.send(piBridgeMessage(runner.sessionPath, event));
+    if (event.type === "event" && isRecord(event.event)) {
+      if (!this.aliasRunnerSessionPath(runner, sessionPathFromPiPayload(event.event))) {
+        return;
+      }
+    }
+
+    this.sendWithMetadata(piBridgeMessage(runner.sessionPath, event), runner);
 
     if (event.type === "spawn_error" || event.type === "framing_error" || event.type === "write_error") {
       runner.activeTurn = false;
@@ -177,7 +196,7 @@ export class PiRunnerCore {
     if (event.type === "status" && event.status === "exited") {
       runner.activeTurn = false;
       if (this.runners.get(runner.key)?.pi === runner.pi) {
-        this.runners.delete(runner.key);
+        this.deleteRunnerAliases(runner);
       }
       return;
     }
@@ -210,12 +229,15 @@ export class PiRunnerCore {
     }
 
     if (isCancelledSessionReplacement(response)) {
-      this.options.send({
-        source: "bridge",
-        type: "session_cancelled",
-        command,
-        message: command === "new_session" ? "New session cancelled." : "Session switch cancelled."
-      });
+      this.sendWithMetadata(
+        {
+          source: "bridge",
+          type: "session_cancelled",
+          command,
+          message: command === "new_session" ? "New session cancelled." : "Session switch cancelled."
+        },
+        runner
+      );
     }
 
     this.hydrateRunnerSession(runner, currentBridgeVersion(response) ?? runner.sessionVersion);
@@ -230,10 +252,75 @@ export class PiRunnerCore {
     runner.pi.send(rpcCommand);
   }
 
+  private aliasRunnerSessionPath(runner: PiRunner, sessionPath: string): boolean {
+    if (!sessionPath) {
+      return true;
+    }
+
+    const aliasKey = pathRunnerKey(sessionPath);
+    const existingRunner = this.runners.get(aliasKey);
+    if (existingRunner && existingRunner !== runner) {
+      this.stopCollidingRunner(runner, sessionPath);
+      return false;
+    }
+
+    runner.sessionPath = sessionPath;
+    if (runner.key.startsWith("path:")) {
+      runner.key = aliasKey;
+    }
+    this.deleteRunnerPathAliases(runner, sessionPath);
+    this.runners.set(aliasKey, runner);
+    return true;
+  }
+
+  private stopCollidingRunner(runner: PiRunner, sessionPath: string): void {
+    this.sendWithMetadata(
+      {
+        source: "bridge",
+        type: "error",
+        message: `Session path is already active: ${sessionPath}.`
+      },
+      runner
+    );
+    runner.activeTurn = false;
+    runner.pi.stop();
+    this.deleteRunnerAliases(runner);
+  }
+
+  private deleteRunnerPathAliases(runner: PiRunner, keepSessionPath: string): void {
+    const keepKey = pathRunnerKey(keepSessionPath);
+    for (const [key, candidate] of this.runners) {
+      if (candidate === runner && key.startsWith("path:") && key !== keepKey) {
+        this.runners.delete(key);
+      }
+    }
+  }
+
+  private deleteRunnerAliases(runner: PiRunner): void {
+    for (const [key, candidate] of this.runners) {
+      if (candidate === runner) {
+        this.runners.delete(key);
+      }
+    }
+  }
+
+  private isRunnerRegistered(runner: PiRunner): boolean {
+    for (const candidate of this.runners.values()) {
+      if (candidate === runner) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private sendWithMetadata(message: unknown, runner: PiRunner): void {
+    this.options.send(message, { runnerKey: runner.key, sessionPath: runner.sessionPath });
+  }
+
   private runnerTarget(payload: Record<string, unknown> | undefined): RunnerTarget {
     const sessionPath = stringPayload(payload, "sessionPath") || stringPayload(payload, "path");
     if (!sessionPath) {
-      return { key: defaultRunnerKey(), config: {} };
+      return { key: stringPayload(payload, "internalRunnerKey") || defaultRunnerKey(), config: {} };
     }
 
     return {
@@ -304,9 +391,12 @@ export class PiRunnerCore {
   private async refreshSessions(): Promise<void> {
     try {
       const sessions = await this.listSessions(this.options.cwd, this.options.sessionDir);
-      this.options.send({ source: "bridge", type: "sessions", sessions });
+      this.options.send({ source: "bridge", type: "sessions", sessions }, { topic: "sessions" });
     } catch (error) {
-      this.sendBridgeError(error instanceof Error ? error.message : String(error));
+      this.options.send(
+        { source: "bridge", type: "error", message: error instanceof Error ? error.message : String(error) },
+        { topic: "sessions" }
+      );
     }
   }
 
@@ -333,7 +423,7 @@ function commandPayload(payload: Record<string, unknown> | undefined): Record<st
     return {};
   }
 
-  const { sessionPath: _sessionPath, path: _path, queueMode: _queueMode, ...rest } = payload;
+  const { sessionPath: _sessionPath, path: _path, queueMode: _queueMode, internalRunnerKey: _internalRunnerKey, ...rest } = payload;
   return rest;
 }
 
@@ -371,6 +461,29 @@ function currentBridgeVersion(response: Record<string, unknown>): number | null 
 function isCancelledSessionReplacement(response: Record<string, unknown>): boolean {
   const data = response.data;
   return isRecord(data) && data.cancelled === true;
+}
+
+function sessionPathFromPiPayload(payload: Record<string, unknown>): string {
+  const data = payload.data;
+  const direct = stringValue(payload.sessionFile) || stringValue(payload.sessionPath);
+  if (direct) {
+    return direct;
+  }
+
+  if (!isRecord(data)) {
+    return "";
+  }
+
+  const nestedSession = data.session;
+  return (
+    stringValue(data.sessionFile) ||
+    stringValue(data.sessionPath) ||
+    (isRecord(nestedSession) ? stringValue(nestedSession.sessionFile) || stringValue(nestedSession.sessionPath) : "")
+  );
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === "string" ? value : "";
 }
 
 function hydratedModel(model: unknown): { provider: unknown; value: unknown } {

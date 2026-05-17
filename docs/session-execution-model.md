@@ -11,9 +11,25 @@ This document captures the session execution model for Agent Web. The goal is to
 - Live execution must not depend on whichever session is currently selected in the browser.
 - At most one runner process may be running, cancelling, or draining for a session at a time.
 
+## Runner Service Architecture
+
+Agent Web now runs as two local services:
+
+- The web service serves the Vue app and keeps the browser-facing `/rpc` WebSocket protocol stable.
+- The runner service owns `PiRunnerCore`, Pi child processes, session hydration, and live event routing.
+
+Start them in separate terminals during development:
+
+```sh
+npm run dev:runner
+npm run dev:web
+```
+
+The runner service binds to `127.0.0.1:4178` by default, exposes `GET /health`, and accepts the internal WebSocket at `/runner`. Use `RUNNER_HOST` and `RUNNER_PORT` to change the runner bind address, or set `RUNNER_URL` on the web service to connect to a specific runner URL.
+
 ## Preferred Architecture
 
-Use a per-session backend runner for active turns. The current implementation keeps each runner warm until it exits or the browser connection is disposed; a stricter one-shot runner can still be introduced later if it preserves the invariants below.
+Use a per-session backend runner for active turns. The runner service keeps each runner warm until it exits or the service is shut down; a stricter one-shot runner can still be introduced later if it preserves the invariants below. Browser disconnects unsubscribe clients from live events but do not stop active Pi work.
 
 When the user sends a message:
 

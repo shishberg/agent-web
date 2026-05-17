@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch --clear-screen=false server/index.ts",
+    "dev": "tsx watch --clear-screen=false --exclude vite.config.ts.timestamp-* server/index.ts",
+    "dev:web": "tsx watch --clear-screen=false --exclude vite.config.ts.timestamp-* server/index.ts",
+    "dev:runner": "tsx watch --clear-screen=false --exclude vite.config.ts.timestamp-* server/runnerService.ts",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "tsx server/index.ts --production",
     "test": "vitest run",
