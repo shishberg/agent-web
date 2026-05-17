@@ -132,17 +132,31 @@ export function reduceSessionEvent(state: SessionState, event: PiEvent): Session
     case "turn_end":
       state.turnActive = false;
       break;
-    case "message_start":
-      state.activeMessageId = resolveMessageId(state, event);
-      applyCompleteMessage(upsertMessageForStart(state, state.activeMessageId, roleFromEvent(event), "streaming"), event);
+    case "message_start": {
+      const id = messageId(event);
+      const role = roleFromMessageLifecycleEvent(event);
+      if (!id || !role || role === "user") {
+        break;
+      }
+      state.activeMessageId = id;
+      applyCompleteMessage(upsertMessage(state, id, role, "streaming"), event);
       break;
+    }
     case "message_update":
       applyMessageUpdate(state, event);
       break;
-    case "message_end":
-      applyCompleteMessage(upsertMessage(state, resolveMessageId(state, event), roleFromEvent(event), "done"), event);
-      state.activeMessageId = null;
+    case "message_end": {
+      const id = messageId(event);
+      const role = roleFromMessageLifecycleEvent(event);
+      if (!id || !role || role === "user") {
+        break;
+      }
+      applyCompleteMessage(upsertMessage(state, id, role, "done"), event);
+      if (state.activeMessageId === id) {
+        state.activeMessageId = null;
+      }
       break;
+    }
     case "tool_execution_start":
       upsertExecutionTool(state, event, (tool) => {
         tool.name = toolName(event) || tool.name;
@@ -152,7 +166,7 @@ export function reduceSessionEvent(state: SessionState, event: PiEvent): Session
       upsertMessageToolPart(state, event, { status: "running" });
       break;
     case "tool_execution_update":
-      updateTool(state, toolId(event), (tool) => {
+      updateTool(state, executionToolId(event), (tool) => {
         const partial = textFromContent(event.partialResult) || stringField(event.delta) || stringField(event.output) || stringField(event.message);
         if (partial) {
           tool.log = [partial];
@@ -161,7 +175,7 @@ export function reduceSessionEvent(state: SessionState, event: PiEvent): Session
       upsertMessageToolPart(state, event, { status: "running" });
       break;
     case "tool_execution_end":
-      updateTool(state, toolId(event), (tool) => {
+      updateTool(state, executionToolId(event), (tool) => {
         tool.status = isToolError(event) ? "failed" : "done";
         tool.output = event.output ?? event.result;
       });
@@ -248,7 +262,11 @@ function hydrateSessionMessageIntoState(state: SessionState, value: unknown, ind
   const extracted = extractHydratedContent(message?.content);
   if (isHydratedToolResult(message)) {
     const toolResult = message as Record<string, unknown>;
-    const target = assistantMessageForToolPart(state, toolPartKey(toolResult));
+    const key = hydratedToolResultKey(toolResult);
+    const target = key ? messageForExistingToolPart(state, key) : undefined;
+    if (!target) {
+      return;
+    }
     mergeToolPart(target, toolPartFromHydratedToolResult(toolResult));
     target.status = "done";
     return;
@@ -304,12 +322,12 @@ function extractHydratedContent(content: unknown): Pick<SessionMessage, "content
       continue;
     }
 
-    if (isAssistantToolCall(item)) {
+    if (isAssistantToolCall(item) && hydratedToolCallKey(item)) {
       mergeToolPart({ tools }, toolPartFromToolCall(item));
       continue;
     }
 
-    if (isAssistantToolResult(item)) {
+    if (isAssistantToolResult(item) && hydratedToolResultKey(item)) {
       mergeToolPart({ tools }, toolPartFromHydratedToolResult(item));
     }
   }
@@ -318,18 +336,25 @@ function extractHydratedContent(content: unknown): Pick<SessionMessage, "content
 }
 
 function applyMessageUpdate(state: SessionState, event: PiEvent): void {
-  const id = resolveMessageId(state, event);
-  state.activeMessageId = id;
-  const message = upsertMessage(state, id, roleFromEvent(event), "streaming");
+  const id = messageId(event);
+  const role = roleFromMessageLifecycleEvent(event);
+  if (!id || !role || role === "user") {
+    return;
+  }
+
   const assistantEvent = event.assistantMessageEvent as PiEvent | undefined;
   const deltaType = assistantEvent?.type;
 
   if (deltaType === "text_delta") {
+    state.activeMessageId = id;
+    const message = upsertMessage(state, id, role, "streaming");
     message.content += stringField(assistantEvent?.delta);
     return;
   }
 
   if (deltaType === "thinking_delta") {
+    state.activeMessageId = id;
+    const message = upsertMessage(state, id, role, "streaming");
     message.thinking += stringField(assistantEvent?.delta);
     return;
   }
@@ -354,20 +379,10 @@ function upsertMessage(state: SessionState, id: string, role: Role, status: Mess
   return message;
 }
 
-function upsertMessageForStart(state: SessionState, id: string, role: Role, status: MessageStatus): SessionMessage {
-  if (role === "assistant") {
-    const pendingToolMessage = state.messages.at(-1);
-    if (isSyntheticToolMessage(pendingToolMessage)) {
-      pendingToolMessage.id = id;
-      pendingToolMessage.status = status;
-      return pendingToolMessage;
-    }
-  }
-
-  return upsertMessage(state, id, role, status);
-}
-
 function updateTool(state: SessionState, id: string, update: (tool: ToolExecution) => void): void {
+  if (!id) {
+    return;
+  }
   const tool = state.tools.find((item) => item.id === id);
   if (tool) {
     update(tool);
@@ -375,7 +390,10 @@ function updateTool(state: SessionState, id: string, update: (tool: ToolExecutio
 }
 
 function upsertExecutionTool(state: SessionState, event: PiEvent, update: (tool: ToolExecution) => void): void {
-  const id = toolId(event);
+  const id = executionToolId(event);
+  if (!id) {
+    return;
+  }
   let tool = state.tools.find((item) => item.id === id);
   if (!tool) {
     tool = {
@@ -395,13 +413,19 @@ function upsertMessageToolPart(
   event: PiEvent,
   options: { status: MessageToolStatus }
 ): void {
-  const key = toolIdentityKey(event);
+  const key = executionToolId(event);
+  if (!key) {
+    return;
+  }
   const message = assistantMessageForToolPart(state, key);
+  if (!message) {
+    return;
+  }
   mergeToolPart(message, toolPartFromExecutionEvent(event, options.status, key));
 }
 
-function assistantMessageForToolPart(state: SessionState, key: string): SessionMessage {
-  const messageWithTool = key ? messageForExistingToolPart(state, key) : undefined;
+function assistantMessageForToolPart(state: SessionState, key: string): SessionMessage | undefined {
+  const messageWithTool = messageForExistingToolPart(state, key);
   if (messageWithTool) {
     return messageWithTool;
   }
@@ -412,28 +436,11 @@ function assistantMessageForToolPart(state: SessionState, key: string): SessionM
   if (activeMessage) {
     return activeMessage;
   }
-
-  const latestMessage = state.messages.at(-1);
-  if (latestMessage?.role === "assistant") {
-    return latestMessage;
-  }
-
-  return upsertMessage(state, createId("assistant-tools"), "assistant", "streaming");
+  return undefined;
 }
 
-function messageForExistingToolPart(state: SessionState, key: string): SessionMessage | undefined {
-  return state.messages.find((message) => message.tools.some((tool) => tool.key === key || tool.id === key));
-}
-
-function isSyntheticToolMessage(message: SessionMessage | undefined): message is SessionMessage {
-  return Boolean(
-    message &&
-      message.role === "assistant" &&
-      message.id.startsWith("assistant-tools-") &&
-      !message.content &&
-      !message.thinking &&
-      message.tools.length > 0
-  );
+function messageForExistingToolPart(state: Pick<SessionState, "messages">, key: string): SessionMessage | undefined {
+  return state.messages.find((message) => message.tools.some((tool) => tool.key === key));
 }
 
 function mergeToolPart(message: Pick<SessionMessage, "tools">, incoming: MessageToolPart): void {
@@ -445,9 +452,6 @@ function mergeToolPart(message: Pick<SessionMessage, "tools">, incoming: Message
 
   if (incoming.id) {
     existing.id = incoming.id;
-  }
-  if (incoming.key && existing.key !== incoming.key && !message.tools.some((tool) => tool !== existing && tool.key === incoming.key)) {
-    existing.key = incoming.key;
   }
   if (incoming.name !== "tool") {
     existing.name = incoming.name;
@@ -472,22 +476,10 @@ function mergeToolPart(message: Pick<SessionMessage, "tools">, incoming: Message
 }
 
 function existingToolPart(tools: MessageToolPart[], incoming: MessageToolPart): MessageToolPart | undefined {
-  const exact = tools.find((tool) => (incoming.key && tool.key === incoming.key) || (incoming.id && tool.id === incoming.id));
-  if (exact) {
-    return exact;
-  }
-
-  if ((incoming.status === "done" || incoming.status === "error") && incoming.output !== undefined) {
-    const unresolved = tools.filter((tool) => tool.status === "running" && tool.output === undefined);
-    if (unresolved.length === 1) {
-      return unresolved[0];
-    }
-  }
-
-  return undefined;
+  return tools.find((tool) => incoming.key && tool.key === incoming.key);
 }
 
-function toolPartFromExecutionEvent(event: PiEvent, status: MessageToolStatus, key = toolIdentityKey(event)): MessageToolPart {
+function toolPartFromExecutionEvent(event: PiEvent, status: MessageToolStatus, key = executionToolId(event)): MessageToolPart {
   const output = event.output ?? event.result ?? event.partialResult ?? event.delta ?? event.message;
   const content = textFromToolPayload(output) || stringField(output) || jsonDisplay(output);
 
@@ -509,11 +501,11 @@ function toolPartFromExecutionEvent(event: PiEvent, status: MessageToolStatus, k
 }
 
 function toolPartFromToolCall(event: PiEvent): MessageToolPart {
-  const key = toolIdentityKey(event);
+  const key = hydratedToolCallKey(event);
   return {
     type: "tool",
     key,
-    id: key,
+    id: stringField(event.id) || key,
     label: toolName(event) || "Tool call",
     name: toolName(event) || "tool",
     detail: toolDetail(event) || undefined,
@@ -526,13 +518,13 @@ function toolPartFromToolCall(event: PiEvent): MessageToolPart {
 }
 
 function toolPartFromHydratedToolResult(event: PiEvent): MessageToolPart {
-  const key = toolIdentityKey(event);
+  const key = hydratedToolResultKey(event);
   const failed = isToolError(event);
   const output = event.output ?? event.result ?? event.content;
   return {
     type: "tool",
     key,
-    id: key,
+    id: stringField(event.id) || key,
     label: toolName(event) || "Tool call",
     name: toolName(event) || "tool",
     detail: toolDetail(event) || undefined,
@@ -590,19 +582,18 @@ function toolStatusLabel(status: MessageToolStatus): string {
   }
 }
 
-function toolPartKey(event: PiEvent | Record<string, unknown> | undefined): string {
+function hydratedToolCallKey(event: PiEvent | Record<string, unknown> | undefined): string {
   if (!event) {
     return "";
   }
-  return firstString(event.toolCallId, event.tool_call_id, event.toolExecutionId, event.tool_execution_id, event.tool_use_id, event.toolUseId, event.id);
+  return firstString(event.id, event.toolCallId, event.tool_call_id, event.tool_use_id, event.toolUseId);
 }
 
-function toolIdentityKey(event: PiEvent): string {
-  return toolPartKey(event) || fallbackToolKey(event) || createId("tool");
-}
-
-function fallbackToolKey(event: PiEvent): string {
-  return [toolName(event) || "tool", toolDetail(event), jsonDisplay(toolInput(event))].filter(Boolean).join(":");
+function hydratedToolResultKey(event: PiEvent | Record<string, unknown> | undefined): string {
+  if (!event) {
+    return "";
+  }
+  return firstString(event.tool_use_id, event.toolUseId, event.toolCallId, event.tool_call_id);
 }
 
 function toolName(event: PiEvent): string {
@@ -756,39 +747,26 @@ function isFireAndForgetExtensionMethod(method: string): boolean {
   return ["notify", "setStatus", "setWidget", "setTitle", "set_editor_text"].includes(method);
 }
 
-function resolveMessageId(state: SessionState, event: PiEvent): string {
-  return messageId(event) || state.activeMessageId || `message-${state.messages.length + 1}`;
-}
-
 function messageId(event: PiEvent): string {
   const message = objectField(event.message);
-  return (
-    stringField(event.messageId) ||
-    stringField(event.id) ||
-    stringField(message?.id) ||
-    stringField(message?.timestamp)
-  );
+  return stringField(message?.id);
 }
 
-function toolId(event: PiEvent): string {
-  return (
-    stringField(event.id) ||
-    stringField(event.toolExecutionId) ||
-    stringField(event.tool_execution_id) ||
-    stringField(event.toolCallId) ||
-    stringField(event.tool_call_id) ||
-    createId("tool")
-  );
+function executionToolId(event: PiEvent): string {
+  return firstString(event.toolCallId, event.tool_call_id);
 }
 
-function roleFromEvent(event: PiEvent): Role {
+function roleFromMessageLifecycleEvent(event: PiEvent): Role | undefined {
   const message = objectField(event.message);
-  const role = stringField(event.role) || stringField(message?.role);
-  return role === "user" || role === "system" ? role : "assistant";
+  const role = stringField(message?.role);
+  if (role === "user" || role === "assistant" || role === "system") {
+    return role;
+  }
+  return undefined;
 }
 
 function isPiUserMessageEvent(type: string, event: PiEvent): boolean {
-  return type.startsWith("message_") && roleFromEvent(event) === "user";
+  return type.startsWith("message_") && roleFromMessageLifecycleEvent(event) === "user";
 }
 
 function stringField(value: unknown): string {

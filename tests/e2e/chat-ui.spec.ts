@@ -117,6 +117,93 @@ test("renders enriched collapsed tool call summaries", async ({ page }) => {
   await expect(dot).toHaveCSS("background-color", "rgb(34, 197, 94)");
 });
 
+test("renders streaming tool lifecycle events as styled tool details", async ({ page }) => {
+  let wsRoute: { send: (message: string) => void } | undefined;
+
+  await page.routeWebSocket("/rpc", (ws) => {
+    wsRoute = ws;
+    ws.onMessage((message) => {
+      const payload = JSON.parse(typeof message === "string" ? message : message.toString()) as { command?: string };
+      if (payload.command === "list_sessions") {
+        ws.send(JSON.stringify({ source: "bridge", type: "sessions", sessions: [] }));
+      }
+    });
+  });
+
+  await page.goto("/");
+  await expect.poll(() => Boolean(wsRoute)).toBe(true);
+
+  wsRoute?.send(
+    JSON.stringify({
+      source: "pi",
+      type: "event",
+      event: { type: "message_start", message: { id: "assistant-1", role: "assistant" } }
+    })
+  );
+  wsRoute?.send(
+    JSON.stringify({
+      source: "pi",
+      type: "event",
+      event: {
+        type: "message_update",
+        message: { id: "assistant-1", role: "assistant" },
+        assistantMessageEvent: { type: "text_delta", delta: "Let me inspect that." }
+      }
+    })
+  );
+  wsRoute?.send(
+    JSON.stringify({
+      source: "pi",
+      type: "event",
+      event: {
+        type: "tool_execution_start",
+        toolCallId: "call_1",
+        toolName: "bash",
+        args: { command: "pwd" }
+      }
+    })
+  );
+  wsRoute?.send(
+    JSON.stringify({
+      source: "pi",
+      type: "event",
+      event: {
+        type: "tool_execution_update",
+        toolCallId: "call_1",
+        toolName: "bash",
+        args: { command: "pwd" },
+        partialResult: { content: [{ type: "text", text: "running pwd\n" }] }
+      }
+    })
+  );
+  wsRoute?.send(
+    JSON.stringify({
+      source: "pi",
+      type: "event",
+      event: {
+        type: "tool_execution_end",
+        toolCallId: "call_1",
+        toolName: "bash",
+        args: { command: "pwd" },
+        result: { content: [{ type: "text", text: "/Users/agent/src/agent-web\n" }] },
+        isError: false
+      }
+    })
+  );
+
+  await expect(page.getByText("Let me inspect that.")).toBeVisible();
+
+  const toolDetail = page.locator(".tool-detail").first();
+  await expect(toolDetail).toHaveCount(1);
+  await expect(toolDetail.locator("summary")).toContainText("bash");
+  await expect(toolDetail.locator("summary")).toContainText("pwd");
+  await expect(toolDetail.locator("summary")).toContainText("Complete");
+  await expect(toolDetail.locator(".tool-status-dot")).toHaveAttribute("title", "Complete");
+  await expect(toolDetail.locator("pre")).toContainText("/Users/agent/src/agent-web");
+  await expect(page.getByText("Tool call")).toHaveCount(0);
+  await expect(page.locator(".message-markdown")).not.toContainText("running pwd");
+});
+
 test("sends active-turn composer input as queued prompts", async ({ page }) => {
   const commands: { command?: string; payload?: unknown }[] = [];
   let wsRoute: { send: (message: string) => void } | undefined;

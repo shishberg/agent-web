@@ -30,13 +30,11 @@ describe("session state reducer", () => {
     appendLocalUserMessage(state, "Please inspect the app");
     reduceSessionEvent(state, {
       type: "message_start",
-      messageId: "pi-user-1",
-      message: { role: "user", content: "Please inspect the app" }
+      message: { id: "pi-user-1", role: "user", content: "Please inspect the app" }
     });
     reduceSessionEvent(state, {
       type: "message_end",
-      messageId: "pi-user-1",
-      message: { role: "user", content: "Please inspect the app" }
+      message: { id: "pi-user-1", role: "user", content: "Please inspect the app" }
     });
 
     expect(state.messages).toHaveLength(1);
@@ -45,22 +43,76 @@ describe("session state reducer", () => {
 
   it("builds assistant text from streaming text deltas", () => {
     const state = createInitialSessionState();
-    reduceSessionEvent(state, { type: "message_start", messageId: "m1", role: "assistant" });
+    reduceSessionEvent(state, { type: "message_start", message: { id: "m1", role: "assistant" } });
     reduceSessionEvent(state, {
       type: "message_update",
-      messageId: "m1",
+      message: { id: "m1", role: "assistant" },
       assistantMessageEvent: { type: "text_delta", delta: "Hello" }
     });
     reduceSessionEvent(state, {
       type: "message_update",
-      messageId: "m1",
+      message: { id: "m1", role: "assistant" },
       assistantMessageEvent: { type: "text_delta", delta: " there" }
     });
-    reduceSessionEvent(state, { type: "message_end", messageId: "m1" });
+    reduceSessionEvent(state, { type: "message_end", message: { id: "m1", role: "assistant" } });
 
     expect(state.messages).toEqual([
       expect.objectContaining({ id: "m1", role: "assistant", content: "Hello there", status: "done" })
     ]);
+  });
+
+  it("ignores lifecycle message events that do not include message.id", () => {
+    const state = createInitialSessionState();
+
+    reduceSessionEvent(state, { type: "message_start", id: "top-level-1", role: "assistant" });
+    reduceSessionEvent(state, {
+      type: "message_update",
+      messageId: "top-level-1",
+      assistantMessageEvent: { type: "text_delta", delta: "ignored" }
+    });
+    reduceSessionEvent(state, { type: "message_end", message: { role: "assistant", content: "ignored" } });
+
+    expect(state.messages).toEqual([]);
+    expect(state.activeMessageId).toBeNull();
+  });
+
+  it("uses role from message lifecycle payloads instead of top-level role fields", () => {
+    const state = createInitialSessionState();
+
+    reduceSessionEvent(state, {
+      type: "message_start",
+      role: "user",
+      message: { id: "m1", role: "assistant" }
+    });
+    reduceSessionEvent(state, {
+      type: "message_update",
+      role: "user",
+      message: { id: "m1", role: "assistant" },
+      assistantMessageEvent: { type: "thinking_delta", delta: "thinking" }
+    });
+
+    expect(state.messages).toEqual([
+      expect.objectContaining({ id: "m1", role: "assistant", content: "", thinking: "thinking" })
+    ]);
+  });
+
+  it("ignores message updates that include message.id without message.role", () => {
+    const state = createInitialSessionState();
+
+    reduceSessionEvent(state, { type: "message_start", message: { id: "existing", role: "assistant" } });
+    reduceSessionEvent(state, {
+      type: "message_update",
+      message: { id: "existing" },
+      assistantMessageEvent: { type: "text_delta", delta: "ignored existing" }
+    });
+    reduceSessionEvent(state, {
+      type: "message_update",
+      message: { id: "m1" },
+      assistantMessageEvent: { type: "text_delta", delta: "ignored" }
+    });
+
+    expect(state.messages).toEqual([expect.objectContaining({ id: "existing", content: "", thinking: "" })]);
+    expect(state.activeMessageId).toBe("existing");
   });
 
   it("tracks tool execution and queue updates", () => {
@@ -103,10 +155,10 @@ describe("session state reducer", () => {
   it("streaming partial toolcall deltas plus execution lifecycle produce exactly one tool part summary", () => {
     const state = createInitialSessionState();
 
-    reduceSessionEvent(state, { type: "message_start", messageId: "assistant-1", role: "assistant" });
+    reduceSessionEvent(state, { type: "message_start", message: { id: "assistant-1", role: "assistant" } });
     reduceSessionEvent(state, {
       type: "message_update",
-      messageId: "assistant-1",
+      message: { id: "assistant-1", role: "assistant" },
       assistantMessageEvent: { type: "tool_call_delta", delta: { type: "input_json_delta", partial_json: "{\"command\"" } }
     });
     reduceSessionEvent(state, {
@@ -123,7 +175,6 @@ describe("session state reducer", () => {
     reduceSessionEvent(state, {
       type: "tool_execution_end",
       toolCallId: "tool-1",
-      success: true,
       result: { content: [{ type: "text", text: "/tmp" }] }
     });
 
@@ -145,7 +196,7 @@ describe("session state reducer", () => {
   it("replaces accumulated tool execution updates instead of appending them", () => {
     const state = createInitialSessionState();
 
-    reduceSessionEvent(state, { type: "message_start", messageId: "assistant-1", role: "assistant" });
+    reduceSessionEvent(state, { type: "message_start", message: { id: "assistant-1", role: "assistant" } });
     reduceSessionEvent(state, {
       type: "tool_execution_start",
       toolCallId: "tool-1",
@@ -174,7 +225,7 @@ describe("session state reducer", () => {
   it("marks tool executions as errors when nested results report errors", () => {
     const state = createInitialSessionState();
 
-    reduceSessionEvent(state, { type: "message_start", messageId: "assistant-1", role: "assistant" });
+    reduceSessionEvent(state, { type: "message_start", message: { id: "assistant-1", role: "assistant" } });
     reduceSessionEvent(state, {
       type: "tool_execution_start",
       toolCallId: "tool-1",
@@ -197,10 +248,10 @@ describe("session state reducer", () => {
     );
   });
 
-  it("uses stable non-empty fallback keys for id-less tool executions", () => {
+  it("ignores tool execution events without toolCallId", () => {
     const state = createInitialSessionState();
 
-    reduceSessionEvent(state, { type: "message_start", messageId: "assistant-1", role: "assistant" });
+    reduceSessionEvent(state, { type: "message_start", message: { id: "assistant-1", role: "assistant" } });
     reduceSessionEvent(state, {
       type: "tool_execution_start",
       toolName: "bash",
@@ -212,16 +263,47 @@ describe("session state reducer", () => {
       args: { command: "date" }
     });
 
-    expect(state.messages[0].tools).toHaveLength(2);
-    expect(state.messages[0].tools.map((tool) => tool.key)).toEqual(["bash:pwd:{\n  \"command\": \"pwd\"\n}", "bash:date:{\n  \"command\": \"date\"\n}"]);
+    expect(state.tools).toEqual([]);
+    expect(state.messages[0].tools).toEqual([]);
+  });
+
+  it("ignores execution identity aliases without toolCallId or tool_call_id", () => {
+    for (const identity of [
+      { id: "tool-1" },
+      { toolExecutionId: "tool-1" },
+      { tool_use_id: "tool-1" }
+    ]) {
+      const state = createInitialSessionState();
+
+      reduceSessionEvent(state, { type: "message_start", message: { id: "assistant-1", role: "assistant" } });
+      reduceSessionEvent(state, {
+        type: "tool_execution_start",
+        ...identity,
+        toolName: "bash",
+        args: { command: "pwd" }
+      });
+      reduceSessionEvent(state, {
+        type: "tool_execution_update",
+        ...identity,
+        partialResult: { content: [{ type: "text", text: "running" }] }
+      });
+      reduceSessionEvent(state, {
+        type: "tool_execution_end",
+        ...identity,
+        result: { content: [{ type: "text", text: "/tmp" }] }
+      });
+
+      expect(state.tools).toEqual([]);
+      expect(state.messages[0].tools).toEqual([]);
+    }
   });
 
   it("hydrated transcript and equivalent streamed transcript produce equivalent tool state", () => {
     const streamed = createInitialSessionState();
-    reduceSessionEvent(streamed, { type: "message_start", messageId: "assistant-1", role: "assistant" });
+    reduceSessionEvent(streamed, { type: "message_start", message: { id: "assistant-1", role: "assistant" } });
     reduceSessionEvent(streamed, {
       type: "message_update",
-      messageId: "assistant-1",
+      message: { id: "assistant-1", role: "assistant" },
       assistantMessageEvent: { type: "text_delta", delta: "Let me inspect that." }
     });
     reduceSessionEvent(streamed, {
@@ -278,7 +360,7 @@ describe("session state reducer", () => {
   it("message_end enriches an existing streamed tool without duplicating it", () => {
     const state = createInitialSessionState();
 
-    reduceSessionEvent(state, { type: "message_start", messageId: "assistant-1", role: "assistant" });
+    reduceSessionEvent(state, { type: "message_start", message: { id: "assistant-1", role: "assistant" } });
     reduceSessionEvent(state, {
       type: "tool_execution_start",
       toolCallId: "tool-1",
@@ -287,8 +369,8 @@ describe("session state reducer", () => {
     });
     reduceSessionEvent(state, {
       type: "message_end",
-      messageId: "assistant-1",
       message: {
+        id: "assistant-1",
         role: "assistant",
         content: [
           { type: "toolCall", id: "tool-1", name: "bash", arguments: { command: "pwd" } },
@@ -312,16 +394,16 @@ describe("session state reducer", () => {
   it("ID-less partial input JSON never renders as a tool", () => {
     const state = createInitialSessionState();
 
-    reduceSessionEvent(state, { type: "message_start", messageId: "assistant-1", role: "assistant" });
+    reduceSessionEvent(state, { type: "message_start", message: { id: "assistant-1", role: "assistant" } });
     reduceSessionEvent(state, {
       type: "message_update",
-      messageId: "assistant-1",
+      message: { id: "assistant-1", role: "assistant" },
       assistantMessageEvent: { type: "tool_call_delta", delta: { type: "input_json_delta", partial_json: "{" } }
     });
     reduceSessionEvent(state, {
       type: "message_end",
-      messageId: "assistant-1",
       message: {
+        id: "assistant-1",
         role: "assistant",
         content: [
           { type: "tool_call_delta", delta: { type: "input_json_delta", partial_json: "{" } },
@@ -337,10 +419,10 @@ describe("session state reducer", () => {
   it("ignores assistant stream tool fragments instead of rendering generic tool parts", () => {
     const state = createInitialSessionState();
 
-    reduceSessionEvent(state, { type: "message_start", messageId: "assistant-1", role: "assistant" });
+    reduceSessionEvent(state, { type: "message_start", message: { id: "assistant-1", role: "assistant" } });
     reduceSessionEvent(state, {
       type: "message_update",
-      messageId: "assistant-1",
+      message: { id: "assistant-1", role: "assistant" },
       assistantMessageEvent: {
         type: "tool_call",
         id: "call_1",
@@ -350,7 +432,7 @@ describe("session state reducer", () => {
     });
     reduceSessionEvent(state, {
       type: "message_update",
-      messageId: "assistant-1",
+      message: { id: "assistant-1", role: "assistant" },
       assistantMessageEvent: {
         type: "tool_result",
         toolCallId: "call_1",
@@ -359,7 +441,7 @@ describe("session state reducer", () => {
     });
     reduceSessionEvent(state, {
       type: "message_update",
-      messageId: "assistant-1",
+      message: { id: "assistant-1", role: "assistant" },
       delta: "{\"command\":\"pwd\"}"
     });
 
@@ -374,10 +456,10 @@ describe("session state reducer", () => {
   it("renders lifecycle tool events after ignored assistant stream fragments as one attached tool", () => {
     const state = createInitialSessionState();
 
-    reduceSessionEvent(state, { type: "message_start", messageId: "assistant-1", role: "assistant" });
+    reduceSessionEvent(state, { type: "message_start", message: { id: "assistant-1", role: "assistant" } });
     reduceSessionEvent(state, {
       type: "message_update",
-      messageId: "assistant-1",
+      message: { id: "assistant-1", role: "assistant" },
       assistantMessageEvent: {
         type: "tool_call",
         id: "call_1",
@@ -414,7 +496,7 @@ describe("session state reducer", () => {
     ]);
   });
 
-  it("tool execution before message creates a synthetic assistant message and message_start reuses it", () => {
+  it("stores tool execution events outside messages when there is no active assistant message", () => {
     const state = createInitialSessionState();
 
     reduceSessionEvent(state, {
@@ -423,19 +505,13 @@ describe("session state reducer", () => {
       toolName: "bash",
       args: { command: "pwd" }
     });
-    expect(state.messages).toEqual([
-      expect.objectContaining({
-        role: "assistant",
-        content: "",
-        tools: [expect.objectContaining({ key: "tool-1", status: "running" })],
-        status: "streaming"
-      })
-    ]);
+    expect(state.messages).toEqual([]);
+    expect(state.tools).toEqual([expect.objectContaining({ id: "tool-1", status: "running" })]);
 
-    reduceSessionEvent(state, { type: "message_start", messageId: "assistant-1", role: "assistant" });
+    reduceSessionEvent(state, { type: "message_start", message: { id: "assistant-1", role: "assistant" } });
     reduceSessionEvent(state, {
       type: "message_update",
-      messageId: "assistant-1",
+      message: { id: "assistant-1", role: "assistant" },
       assistantMessageEvent: { type: "text_delta", delta: "Checking." }
     });
 
@@ -444,7 +520,7 @@ describe("session state reducer", () => {
       expect.objectContaining({
         id: "assistant-1",
         content: "Checking.",
-        tools: [expect.objectContaining({ key: "tool-1", detail: "pwd" })]
+        tools: []
       })
     );
   });
@@ -462,7 +538,7 @@ describe("session state reducer", () => {
         content: [
           { type: "thinking", thinking: "checking files" },
           { type: "text", text: "# Done\n\nIt worked." },
-          { type: "tool_use", name: "read", input: { path: "package.json" } },
+          { type: "tool_use", id: "read-1", name: "read", input: { path: "package.json" } },
           { type: "tool_result", tool_use_id: "read-1", content: [{ type: "text", text: "package contents" }] }
         ]
       }
@@ -497,6 +573,70 @@ describe("session state reducer", () => {
     ]);
     expect(state.tools).toEqual([]);
     expect(state.activeMessageId).toBeNull();
+  });
+
+  it("does not merge hydrated tool results by a generic id field", () => {
+    const state = createInitialSessionState();
+
+    hydrateSessionMessages(state, [
+      {
+        id: "a1",
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "call_1", name: "read", input: { path: "package.json" } },
+          { type: "tool_result", id: "call_1", content: [{ type: "text", text: "ignored" }] }
+        ]
+      },
+      {
+        id: "call_1",
+        role: "toolResult",
+        toolName: "read",
+        content: [{ type: "text", text: "also ignored" }]
+      }
+    ]);
+
+    expect(state.messages[0].tools).toEqual([
+      expect.objectContaining({
+        key: "call_1",
+        status: "running",
+        content: ""
+      })
+    ]);
+  });
+
+  it("does not merge rendered tool parts by matching id when keys differ", () => {
+    const state = createInitialSessionState();
+
+    hydrateSessionMessages(state, [
+      {
+        id: "a1",
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "call_1", name: "read", input: { path: "package.json" } },
+          {
+            type: "tool_result",
+            id: "call_1",
+            tool_use_id: "call_2",
+            content: [{ type: "text", text: "call 2 result" }]
+          }
+        ]
+      }
+    ]);
+
+    expect(state.messages[0].tools).toEqual([
+      expect.objectContaining({
+        key: "call_1",
+        id: "call_1",
+        status: "running",
+        content: ""
+      }),
+      expect.objectContaining({
+        key: "call_2",
+        id: "call_1",
+        status: "done",
+        content: "call 2 result"
+      })
+    ]);
   });
 
   it("captures extension UI request fields whether they are nested or top-level", () => {
