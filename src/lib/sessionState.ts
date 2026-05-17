@@ -333,14 +333,6 @@ function applyMessageUpdate(state: SessionState, event: PiEvent): void {
     message.thinking += stringField(assistantEvent?.delta);
     return;
   }
-
-  if (deltaType && isAssistantToolCall(assistantEvent)) {
-    mergeToolPart(message, toolPartFromToolCall(assistantEvent));
-  } else if (deltaType && isAssistantToolResult(assistantEvent)) {
-    mergeToolPart(message, toolPartFromHydratedToolResult(assistantEvent));
-  } else if (event.delta) {
-    message.content += stringField(event.delta);
-  }
 }
 
 function upsertMessage(state: SessionState, id: string, role: Role, status: MessageStatus): SessionMessage {
