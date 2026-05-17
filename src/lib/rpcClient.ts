@@ -13,15 +13,19 @@ export type PiSessionSummary = {
   firstMessage?: string;
 };
 
+type PiBridgeEnvelope = {
+  sessionPath?: string;
+};
+
 export type BridgeMessage =
   | { source: "bridge"; type: "ready" | "error"; message?: string }
   | { source: "bridge"; type: "sessions"; sessions: PiSessionSummary[] }
   | { source: "bridge"; type: "session_cancelled"; command: string; message: string }
-  | { source: "pi"; type: "status"; status: "starting" | "running" | "exited"; code?: number | null; signal?: string | null }
-  | { source: "pi"; type: "event"; event: PiEvent }
-  | { source: "pi"; type: "response"; response: PiResponse }
-  | { source: "pi"; type: "stderr"; data: string }
-  | { source: "pi"; type: "spawn_error" | "framing_error" | "write_error"; message: string };
+  | ({ source: "pi"; type: "status"; status: "starting" | "running" | "exited"; code?: number | null; signal?: string | null } & PiBridgeEnvelope)
+  | ({ source: "pi"; type: "event"; event: PiEvent } & PiBridgeEnvelope)
+  | ({ source: "pi"; type: "response"; response: PiResponse } & PiBridgeEnvelope)
+  | ({ source: "pi"; type: "stderr"; data: string } & PiBridgeEnvelope)
+  | ({ source: "pi"; type: "spawn_error" | "framing_error" | "write_error"; message: string } & PiBridgeEnvelope);
 
 export type RpcClientHandlers = {
   onMessage: (message: BridgeMessage) => void;

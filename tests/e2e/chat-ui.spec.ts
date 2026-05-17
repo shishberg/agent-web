@@ -133,11 +133,16 @@ test("shows saved-session loading, metadata, and message copy controls", async (
 
   let wsRoute: { send: (message: string) => void } | undefined;
   let openSessionSeen = false;
+  let promptPayload: unknown;
+  let extensionResponsePayload: unknown;
 
   await page.routeWebSocket("/rpc", (ws) => {
     wsRoute = ws;
     ws.onMessage((message) => {
-      const payload = JSON.parse(typeof message === "string" ? message : message.toString()) as { command?: string };
+      const payload = JSON.parse(typeof message === "string" ? message : message.toString()) as {
+        command?: string;
+        payload?: unknown;
+      };
       if (payload.command === "list_sessions") {
         ws.send(
           JSON.stringify({
@@ -157,6 +162,12 @@ test("shows saved-session loading, metadata, and message copy controls", async (
       if (payload.command === "open_session") {
         openSessionSeen = true;
       }
+      if (payload.command === "prompt") {
+        promptPayload = payload.payload;
+      }
+      if (payload.command === "extension_ui_response") {
+        extensionResponsePayload = payload.payload;
+      }
     });
   });
 
@@ -170,6 +181,7 @@ test("shows saved-session loading, metadata, and message copy controls", async (
   wsRoute?.send(
     JSON.stringify({
       source: "pi",
+      sessionPath: "/tmp/pi/saved-session.jsonl",
       type: "response",
       response: {
         type: "response",
@@ -182,6 +194,7 @@ test("shows saved-session loading, metadata, and message copy controls", async (
   wsRoute?.send(
     JSON.stringify({
       source: "pi",
+      sessionPath: "/tmp/pi/saved-session.jsonl",
       type: "response",
       response: {
         type: "response",
@@ -202,6 +215,21 @@ test("shows saved-session loading, metadata, and message copy controls", async (
   );
 
   await expect(page.getByText("Saved answer")).toBeVisible();
+  wsRoute?.send(
+    JSON.stringify({
+      source: "pi",
+      sessionPath: "/tmp/pi/other-session.jsonl",
+      type: "response",
+      response: {
+        type: "response",
+        command: "get_messages",
+        success: true,
+        data: { messages: [{ id: "other", role: "assistant", content: "Other session answer" }] }
+      }
+    })
+  );
+  await expect(page.getByText("Other session answer")).toHaveCount(0);
+  await expect(page.getByText("Saved answer")).toBeVisible();
   await expect(page.locator(".profile-row")).not.toContainText("019e30bb");
   await expect(page.locator(".profile-row")).not.toContainText("Pi ready");
 
@@ -220,6 +248,33 @@ test("shows saved-session loading, metadata, and message copy controls", async (
 
   await page.getByRole("button", { name: "Copy message" }).click();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("Saved **answer**");
+
+  await page.getByRole("textbox", { name: "Message prompt" }).fill("Follow up");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect.poll(() => promptPayload).toEqual({
+    message: "Follow up",
+    sessionPath: "/tmp/pi/saved-session.jsonl"
+  });
+
+  wsRoute?.send(
+    JSON.stringify({
+      source: "pi",
+      sessionPath: "/tmp/pi/saved-session.jsonl",
+      type: "event",
+      event: {
+        type: "extension_ui_request",
+        id: "ext-confirm",
+        method: "confirm",
+        params: { title: "Confirm action", message: "Continue?" }
+      }
+    })
+  );
+  await page.getByRole("button", { name: "Confirm" }).click();
+  await expect.poll(() => extensionResponsePayload).toEqual({
+    id: "ext-confirm",
+    confirmed: true,
+    sessionPath: "/tmp/pi/saved-session.jsonl"
+  });
 });
 
 test("clears saved-session loading when opening fails", async ({ page }) => {
@@ -253,14 +308,9 @@ test("clears saved-session loading when opening fails", async ({ page }) => {
 
   wsRoute?.send(
     JSON.stringify({
-      source: "pi",
-      type: "response",
-      response: {
-        type: "response",
-        command: "switch_session",
-        success: false,
-        error: { message: "missing session" }
-      }
+      source: "bridge",
+      type: "error",
+      message: "missing session"
     })
   );
 

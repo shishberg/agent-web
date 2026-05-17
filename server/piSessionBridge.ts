@@ -1,3 +1,4 @@
+import { dirname } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { createPiRpcCommand, PiProcess, type PiProcessEvent, type PiSessionConfig } from "./piProcess";
 import { listPiSessions, type PiSessionSummary } from "./piSessions";
@@ -15,6 +16,20 @@ type PersistedSessionContext = {
   messages: unknown[];
   model: unknown;
   thinkingLevel?: string;
+};
+
+type PiRunner = {
+  key: string;
+  pi: PiProcessLike;
+  activeTurn: boolean;
+  sessionVersion: number;
+  sessionPath?: string;
+};
+
+type RunnerTarget = {
+  key: string;
+  config: PiSessionConfig;
+  sessionPath?: string;
 };
 
 export type PersistedSessionReader = {
@@ -39,8 +54,8 @@ export class PiSessionBridge {
   private readonly createPiProcess: () => PiProcessLike;
   private readonly listSessions: (cwd: string, sessionDir?: string) => Promise<PiSessionSummary[]>;
   private readonly openPersistedSession: (path: string, sessionDir?: string) => PersistedSessionReader;
-  private pi: PiProcessLike | null = null;
-  private sessionVersion = 0;
+  private readonly runners = new Map<string, PiRunner>();
+  private persistedSessionVersion = 0;
 
   constructor(private readonly options: PiSessionBridgeOptions) {
     this.createPiProcess = options.createPiProcess ?? (() => new PiProcess());
@@ -71,35 +86,54 @@ export class PiSessionBridge {
     }
 
     if (message.command === "new_session") {
-      const version = this.beginSessionVersion();
-      this.ensurePi();
-      this.sendPiCommand("new_session", message.payload, `session-${version}-new`);
+      const runner = this.ensureRunner({ key: defaultRunnerKey(), config: {} });
+      const version = this.beginRunnerSessionVersion(runner);
+      this.sendPiCommand(runner, "new_session", message.payload, `session-${version}-new`);
       return;
     }
 
-    this.ensurePi();
-    this.sendPiCommand(message.command, message.payload);
+    if (message.command === "prompt") {
+      const target = this.runnerTarget(message.payload);
+      const existingRunner = this.runners.get(target.key);
+      if (existingRunner?.activeTurn) {
+        this.sendBridgeError("A turn is already active for this session.");
+        return;
+      }
+
+      const runner = existingRunner ?? this.ensureRunner(target);
+      runner.activeTurn = true;
+      this.sendPiCommand(runner, message.command, commandPayload(message.payload));
+      return;
+    }
+
+    const target = this.runnerTarget(message.payload);
+    const runner = this.ensureRunner(target);
+    this.sendPiCommand(runner, message.command, commandPayload(message.payload));
   }
 
   dispose(): void {
-    this.pi?.stop();
-    this.pi = null;
+    for (const runner of this.runners.values()) {
+      runner.pi.stop();
+    }
+    this.runners.clear();
   }
 
-  private ensurePi(config: PiSessionConfig = {}): PiProcessLike {
-    if (this.pi) {
-      return this.pi;
+  private ensureRunner(target: RunnerTarget): PiRunner {
+    const existingRunner = this.runners.get(target.key);
+    if (existingRunner) {
+      return existingRunner;
     }
 
     const pi = this.createPiProcess();
-    pi.on("pi-event", (event) => void this.handlePiEvent(event));
-    pi.start({ ...config, sessionDir: this.options.sessionDir });
-    this.pi = pi;
-    return pi;
+    const runner: PiRunner = { key: target.key, pi, activeTurn: false, sessionVersion: 0, sessionPath: target.sessionPath };
+    pi.on("pi-event", (event) => void this.handlePiEvent(runner, event));
+    pi.start({ ...target.config, sessionDir: this.options.sessionDir ?? target.config.sessionDir });
+    this.runners.set(target.key, runner);
+    return runner;
   }
 
   private openSession(session: string): void {
-    const version = this.beginSessionVersion();
+    const version = this.beginPersistedSessionVersion();
     try {
       const persistedSession = this.openPersistedSession(session, this.options.sessionDir);
       const context = persistedSession.buildSessionContext();
@@ -109,39 +143,56 @@ export class PiSessionBridge {
     }
   }
 
-  private hydrateActiveSession(version = this.beginSessionVersion()): void {
-    this.sendPiCommand("get_messages", {}, `hydrate-${version}-messages`);
-    this.sendPiCommand("get_state", {}, `hydrate-${version}-state`);
+  private hydrateRunnerSession(runner: PiRunner, version = this.beginRunnerSessionVersion(runner)): void {
+    this.sendPiCommand(runner, "get_messages", {}, `hydrate-${version}-messages`);
+    this.sendPiCommand(runner, "get_state", {}, `hydrate-${version}-state`);
   }
 
-  private async handlePiEvent(event: PiProcessEvent): Promise<void> {
+  private async handlePiEvent(runner: PiRunner, event: PiProcessEvent): Promise<void> {
     if (event.type === "response" && isRecord(event.response)) {
-      if (this.isStaleBridgeResponse(event.response)) {
+      if (this.isStaleRunnerResponse(runner, event.response)) {
         return;
       }
 
-      this.options.send({ source: "pi", ...event });
-      await this.handlePiResponse(event.response);
+      this.options.send(piBridgeMessage(runner.sessionPath, event));
+      await this.handlePiResponse(runner, event.response);
       return;
     }
 
-    this.options.send({ source: "pi", ...event });
+    this.options.send(piBridgeMessage(runner.sessionPath, event));
+
+    if (event.type === "spawn_error" || event.type === "framing_error" || event.type === "write_error") {
+      runner.activeTurn = false;
+    }
 
     if (event.type === "status" && event.status === "exited") {
-      this.pi = null;
+      runner.activeTurn = false;
+      if (this.runners.get(runner.key)?.pi === runner.pi) {
+        this.runners.delete(runner.key);
+      }
       return;
     }
 
-    if (event.type === "event" && isRecord(event.event) && event.event.type === "agent_end") {
-      this.hydrateActiveSession();
-      await this.refreshSessions();
-      return;
+    if (event.type === "event" && isRecord(event.event)) {
+      if (event.event.type === "turn_end") {
+        runner.activeTurn = false;
+      }
+
+      if (event.event.type === "agent_end") {
+        runner.activeTurn = false;
+        this.hydrateRunnerSession(runner);
+        await this.refreshSessions();
+        return;
+      }
     }
 
   }
 
-  private async handlePiResponse(response: Record<string, unknown>): Promise<void> {
+  private async handlePiResponse(runner: PiRunner, response: Record<string, unknown>): Promise<void> {
     if (response.success === false) {
+      if (response.command === "prompt") {
+        runner.activeTurn = false;
+      }
       return;
     }
 
@@ -159,16 +210,29 @@ export class PiSessionBridge {
       });
     }
 
-    this.hydrateActiveSession(currentBridgeVersion(response) ?? this.sessionVersion);
+    this.hydrateRunnerSession(runner, currentBridgeVersion(response) ?? runner.sessionVersion);
     await this.refreshSessions();
   }
 
-  private sendPiCommand(command: string, payload: Record<string, unknown> = {}, id?: string): void {
+  private sendPiCommand(runner: PiRunner, command: string, payload: Record<string, unknown> = {}, id?: string): void {
     const rpcCommand = createPiRpcCommand(command, payload);
     if (id) {
       rpcCommand.id = id;
     }
-    this.pi?.send(rpcCommand);
+    runner.pi.send(rpcCommand);
+  }
+
+  private runnerTarget(payload: Record<string, unknown> | undefined): RunnerTarget {
+    const sessionPath = stringPayload(payload, "sessionPath") || stringPayload(payload, "path");
+    if (!sessionPath) {
+      return { key: defaultRunnerKey(), config: {} };
+    }
+
+    return {
+      key: pathRunnerKey(sessionPath),
+      config: { session: sessionPath, sessionDir: dirname(sessionPath) },
+      sessionPath
+    };
   }
 
   private sendPersistedSessionHydration(
@@ -179,6 +243,7 @@ export class PiSessionBridge {
     const model = hydratedModel(context.model);
     this.options.send({
       source: "pi",
+      ...sessionPathEnvelope(session.getSessionFile()),
       type: "response",
       response: {
         id: `hydrate-${version}-messages`,
@@ -191,6 +256,7 @@ export class PiSessionBridge {
 
     this.options.send({
       source: "pi",
+      ...sessionPathEnvelope(session.getSessionFile()),
       type: "response",
       response: {
         id: `hydrate-${version}-state`,
@@ -212,14 +278,19 @@ export class PiSessionBridge {
     });
   }
 
-  private beginSessionVersion(): number {
-    this.sessionVersion += 1;
-    return this.sessionVersion;
+  private beginPersistedSessionVersion(): number {
+    this.persistedSessionVersion += 1;
+    return this.persistedSessionVersion;
   }
 
-  private isStaleBridgeResponse(response: Record<string, unknown>): boolean {
+  private beginRunnerSessionVersion(runner: PiRunner): number {
+    runner.sessionVersion += 1;
+    return runner.sessionVersion;
+  }
+
+  private isStaleRunnerResponse(runner: PiRunner, response: Record<string, unknown>): boolean {
     const version = currentBridgeVersion(response);
-    return version !== null && version !== this.sessionVersion;
+    return version !== null && version !== runner.sessionVersion;
   }
 
   private async refreshSessions(): Promise<void> {
@@ -236,9 +307,34 @@ export class PiSessionBridge {
   }
 }
 
+function piBridgeMessage(sessionPath: string | undefined, event: PiProcessEvent): Record<string, unknown> {
+  return { source: "pi", ...sessionPathEnvelope(sessionPath), ...event };
+}
+
+function sessionPathEnvelope(sessionPath: string | undefined): Record<string, string> {
+  return sessionPath ? { sessionPath } : {};
+}
+
 function stringPayload(payload: Record<string, unknown> | undefined, key: string): string {
   const value = payload?.[key];
   return typeof value === "string" ? value : "";
+}
+
+function commandPayload(payload: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (!payload) {
+    return {};
+  }
+
+  const { sessionPath: _sessionPath, path: _path, ...rest } = payload;
+  return rest;
+}
+
+function defaultRunnerKey(): string {
+  return "default";
+}
+
+function pathRunnerKey(sessionPath: string): string {
+  return `path:${sessionPath}`;
 }
 
 function currentBridgeVersion(response: Record<string, unknown>): number | null {

@@ -47,6 +47,7 @@ export type ExtensionRequest = {
   id: string;
   method: string;
   params: Record<string, unknown>;
+  sessionPath?: string;
 };
 
 export type ActivityItem = {
@@ -658,7 +659,8 @@ function addExtensionRequest(state: SessionState, event: PiEvent): void {
     return;
   }
 
-  state.extensionRequests.push({ id, method, params });
+  const sessionPath = stringField(event.sessionPath);
+  state.extensionRequests.push({ id, method, params, ...(sessionPath ? { sessionPath } : {}) });
 }
 
 function extensionParams(event: PiEvent): Record<string, unknown> {

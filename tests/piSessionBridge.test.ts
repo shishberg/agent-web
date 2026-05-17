@@ -22,6 +22,7 @@ class FakePiProcess extends EventEmitter implements PiProcessLike {
 
 describe("Pi session bridge", () => {
   let process: FakePiProcess;
+  let processes: FakePiProcess[];
   let sent: unknown[];
   let listSessions: ReturnType<typeof vi.fn>;
   let openSession: ReturnType<typeof vi.fn>;
@@ -29,26 +30,40 @@ describe("Pi session bridge", () => {
 
   beforeEach(() => {
     process = new FakePiProcess();
+    processes = [process];
     sent = [];
     listSessions = vi.fn().mockResolvedValue([
       { id: "s1", path: "/tmp/pi/s1.jsonl", title: "Existing session", modified: "2026-05-16T00:00:00.000Z" }
     ]);
-    openSession = vi.fn().mockReturnValue({
+    openSession = vi.fn((path: string) => ({
       buildSessionContext: () => ({
-        messages: [{ role: "user", content: "saved hello" }],
+        messages: [{ role: "user", content: path.endsWith("s2.jsonl") ? "saved second" : "saved hello" }],
         model: { provider: "anthropic", modelId: "claude-sonnet-4-5" },
         thinkingLevel: "medium"
       }),
-      getSessionId: () => "s1",
-      getSessionFile: () => "/tmp/pi/s1.jsonl",
+      getSessionId: () => (path.endsWith("s2.jsonl") ? "s2" : "s1"),
+      getSessionFile: () => path,
       getCwd: () => "/repo",
-      getSessionName: () => "Existing session",
-      getHeader: () => ({ type: "session", id: "s1", timestamp: "2026-05-16T00:00:00.000Z", cwd: "/repo" })
-    });
+      getSessionName: () => (path.endsWith("s2.jsonl") ? "Second session" : "Existing session"),
+      getHeader: () => ({
+        type: "session",
+        id: path.endsWith("s2.jsonl") ? "s2" : "s1",
+        timestamp: "2026-05-16T00:00:00.000Z",
+        cwd: "/repo"
+      })
+    }));
     bridge = new PiSessionBridge({
       cwd: "/repo",
       sessionDir: "/tmp/pi",
-      createPiProcess: () => process,
+      createPiProcess: () => {
+        const nextProcess = processes.find((candidate) => candidate.starts.length === 0 && candidate.sent.length === 0);
+        if (nextProcess) {
+          return nextProcess;
+        }
+        const created = new FakePiProcess();
+        processes.push(created);
+        return created;
+      },
       listSessions,
       openSession,
       send: (message) => sent.push(message)
@@ -74,6 +89,134 @@ describe("Pi session bridge", () => {
     expect(process.sent).toEqual([{ type: "prompt", message: "hello" }]);
   });
 
+  it("starts a path runner when prompting a saved session path", async () => {
+    await bridge.handleClientMessage({
+      type: "command",
+      command: "prompt",
+      payload: { message: "saved hello", sessionPath: "/tmp/pi/s1.jsonl" }
+    });
+
+    expect(process.starts).toEqual([{ session: "/tmp/pi/s1.jsonl", sessionDir: "/tmp/pi" }]);
+    expect(process.sent).toEqual([{ type: "prompt", message: "saved hello" }]);
+  });
+
+  it("tags path runner events with their session path", async () => {
+    await bridge.handleClientMessage({
+      type: "command",
+      command: "prompt",
+      payload: { message: "saved hello", sessionPath: "/tmp/pi/s1.jsonl" }
+    });
+
+    process.emit("pi-event", { type: "event", event: { type: "message_start", role: "assistant" } });
+
+    expect(sent).toContainEqual({
+      source: "pi",
+      sessionPath: "/tmp/pi/s1.jsonl",
+      type: "event",
+      event: { type: "message_start", role: "assistant" }
+    });
+  });
+
+  it("uses distinct runners for different saved session paths", async () => {
+    await bridge.handleClientMessage({
+      type: "command",
+      command: "prompt",
+      payload: { message: "first", sessionPath: "/tmp/pi/s1.jsonl" }
+    });
+    process.emit("pi-event", { type: "event", event: { type: "agent_end" } });
+
+    await bridge.handleClientMessage({
+      type: "command",
+      command: "prompt",
+      payload: { message: "second", sessionPath: "/tmp/pi/s2.jsonl" }
+    });
+
+    expect(processes).toHaveLength(2);
+    expect(processes[0].starts).toEqual([{ session: "/tmp/pi/s1.jsonl", sessionDir: "/tmp/pi" }]);
+    expect(processes[0].sent).toContainEqual({ type: "prompt", message: "first" });
+    expect(processes[0].sent).not.toContainEqual({ type: "prompt", message: "second" });
+    expect(processes[1].starts).toEqual([{ session: "/tmp/pi/s2.jsonl", sessionDir: "/tmp/pi" }]);
+    expect(processes[1].sent).toEqual([{ type: "prompt", message: "second" }]);
+  });
+
+  it("rejects a second prompt for the same saved session while a turn is active", async () => {
+    await bridge.handleClientMessage({
+      type: "command",
+      command: "prompt",
+      payload: { message: "first", sessionPath: "/tmp/pi/s1.jsonl" }
+    });
+    await bridge.handleClientMessage({
+      type: "command",
+      command: "prompt",
+      payload: { message: "second", sessionPath: "/tmp/pi/s1.jsonl" }
+    });
+
+    expect(processes).toHaveLength(1);
+    expect(process.sent).toEqual([{ type: "prompt", message: "first" }]);
+    expect(sent).toContainEqual({
+      source: "bridge",
+      type: "error",
+      message: "A turn is already active for this session."
+    });
+  });
+
+  it("accepts another prompt for the same saved session after turn_end", async () => {
+    await bridge.handleClientMessage({
+      type: "command",
+      command: "prompt",
+      payload: { message: "first", sessionPath: "/tmp/pi/s1.jsonl" }
+    });
+    process.emit("pi-event", { type: "event", event: { type: "turn_end" } });
+
+    await bridge.handleClientMessage({
+      type: "command",
+      command: "prompt",
+      payload: { message: "second", sessionPath: "/tmp/pi/s1.jsonl" }
+    });
+
+    expect(processes).toHaveLength(1);
+    expect(process.sent).toEqual([
+      { type: "prompt", message: "first" },
+      { type: "prompt", message: "second" }
+    ]);
+  });
+
+  it("routes extension UI responses back to the saved session runner", async () => {
+    await bridge.handleClientMessage({
+      type: "command",
+      command: "prompt",
+      payload: { message: "first", sessionPath: "/tmp/pi/s1.jsonl" }
+    });
+    process.sent.length = 0;
+
+    await bridge.handleClientMessage({
+      type: "command",
+      command: "extension_ui_response",
+      payload: { id: "ext-1", value: "yes", sessionPath: "/tmp/pi/s1.jsonl" }
+    });
+
+    expect(processes).toHaveLength(1);
+    expect(process.sent).toEqual([{ type: "extension_ui_response", id: "ext-1", value: "yes" }]);
+  });
+
+  it("opens a saved session without sending to an active path runner", async () => {
+    await bridge.handleClientMessage({
+      type: "command",
+      command: "prompt",
+      payload: { message: "first", sessionPath: "/tmp/pi/s1.jsonl" }
+    });
+    process.sent.length = 0;
+
+    await bridge.handleClientMessage({
+      type: "command",
+      command: "open_session",
+      payload: { path: "/tmp/pi/s1.jsonl" }
+    });
+
+    expect(openSession).toHaveBeenCalledWith("/tmp/pi/s1.jsonl", "/tmp/pi");
+    expect(process.sent).toEqual([]);
+  });
+
   it("opens a Pi-owned session from persisted state without starting Pi", async () => {
     await bridge.handleClientMessage({
       type: "command",
@@ -86,6 +229,7 @@ describe("Pi session bridge", () => {
     expect(process.sent).toEqual([]);
     expect(sent).toContainEqual({
       source: "pi",
+      sessionPath: "/tmp/pi/s1.jsonl",
       type: "response",
       response: {
         id: "hydrate-1-messages",
@@ -97,6 +241,7 @@ describe("Pi session bridge", () => {
     });
     expect(sent).toContainEqual({
       source: "pi",
+      sessionPath: "/tmp/pi/s1.jsonl",
       type: "response",
       response: {
         id: "hydrate-1-state",
@@ -148,6 +293,7 @@ describe("Pi session bridge", () => {
     expect(process.sent).toEqual([]);
     expect(sent).toContainEqual({
       source: "pi",
+      sessionPath: "/tmp/pi/s1.jsonl",
       type: "response",
       response: expect.objectContaining({ id: "hydrate-1-messages", command: "get_messages" })
     });
@@ -222,13 +368,50 @@ describe("Pi session bridge", () => {
     expect(process.sent).toEqual([]);
     expect(sent).toContainEqual({
       source: "pi",
+      sessionPath: "/tmp/pi/s1.jsonl",
       type: "response",
       response: expect.objectContaining({ id: "hydrate-1-messages" })
     });
     expect(sent).toContainEqual({
       source: "pi",
+      sessionPath: "/tmp/pi/s2.jsonl",
       type: "response",
       response: expect.objectContaining({ id: "hydrate-2-messages" })
+    });
+  });
+
+  it("scopes stale hydration filtering to each runner", async () => {
+    await bridge.handleClientMessage({
+      type: "command",
+      command: "prompt",
+      payload: { message: "first", sessionPath: "/tmp/pi/s1.jsonl" }
+    });
+    process.emit("pi-event", { type: "event", event: { type: "agent_end" } });
+
+    await bridge.handleClientMessage({
+      type: "command",
+      command: "prompt",
+      payload: { message: "second", sessionPath: "/tmp/pi/s2.jsonl" }
+    });
+    processes[1].emit("pi-event", { type: "event", event: { type: "agent_end" } });
+    sent.length = 0;
+
+    process.emit("pi-event", {
+      type: "response",
+      response: {
+        id: "hydrate-1-messages",
+        type: "response",
+        command: "get_messages",
+        success: true,
+        data: { messages: [{ role: "assistant", content: "s1 hydrated late" }] }
+      }
+    });
+
+    expect(sent).toContainEqual({
+      source: "pi",
+      sessionPath: "/tmp/pi/s1.jsonl",
+      type: "response",
+      response: expect.objectContaining({ id: "hydrate-1-messages", command: "get_messages" })
     });
   });
 
@@ -249,12 +432,22 @@ describe("Pi session bridge", () => {
     });
   });
 
-  it("stops the runtime on dispose", () => {
-    void bridge.handleClientMessage({ type: "command", command: "prompt", payload: { message: "hello" } });
+  it("stops all active runners on dispose", async () => {
+    await bridge.handleClientMessage({
+      type: "command",
+      command: "prompt",
+      payload: { message: "first", sessionPath: "/tmp/pi/s1.jsonl" }
+    });
+    process.emit("pi-event", { type: "event", event: { type: "agent_end" } });
+    await bridge.handleClientMessage({
+      type: "command",
+      command: "prompt",
+      payload: { message: "second", sessionPath: "/tmp/pi/s2.jsonl" }
+    });
 
     bridge.dispose();
 
-    expect(process.stopped).toBe(true);
+    expect(processes.map((candidate) => candidate.stopped)).toEqual([true, true]);
   });
 
   it("starts a fresh runtime after Pi exits", async () => {
@@ -276,5 +469,32 @@ describe("Pi session bridge", () => {
     expect(processes[0].sent).toEqual([{ type: "prompt", message: "first" }]);
     expect(processes[1].starts).toEqual([{ sessionDir: "/tmp/pi" }]);
     expect(processes[1].sent).toEqual([{ type: "prompt", message: "second" }]);
+  });
+
+  it("removes only the runner that exits", async () => {
+    await bridge.handleClientMessage({
+      type: "command",
+      command: "prompt",
+      payload: { message: "first", sessionPath: "/tmp/pi/s1.jsonl" }
+    });
+    process.emit("pi-event", { type: "event", event: { type: "agent_end" } });
+    await bridge.handleClientMessage({
+      type: "command",
+      command: "prompt",
+      payload: { message: "second", sessionPath: "/tmp/pi/s2.jsonl" }
+    });
+
+    process.emit("pi-event", { type: "status", status: "exited", code: 0, signal: null });
+    await bridge.handleClientMessage({
+      type: "command",
+      command: "follow_up",
+      payload: { message: "still second", sessionPath: "/tmp/pi/s2.jsonl" }
+    });
+
+    expect(processes).toHaveLength(2);
+    expect(processes[1].sent).toEqual([
+      { type: "prompt", message: "second" },
+      { type: "follow_up", message: "still second" }
+    ]);
   });
 });

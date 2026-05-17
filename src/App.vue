@@ -244,6 +244,7 @@ function cycleTheme() {
 function sendPrompt() {
   const message = prompt.value.trim();
   if (!message) return;
+  const payload = promptPayload(message);
 
   appendLocalUserMessage(session, message);
   if (!activeSessionId.value && draftTitle.value === "New chat") {
@@ -251,16 +252,22 @@ function sendPrompt() {
   }
 
   if (session.turnActive) {
-    client.command(queueMode.value, { message });
+    client.command(queueMode.value, payload);
   } else {
-    client.command("prompt", { message });
+    client.command("prompt", payload);
   }
 
   prompt.value = "";
 }
 
+function promptPayload(message: string): Record<string, unknown> {
+  const sessionPath = activePiSession.value?.path;
+  return sessionPath ? { message, sessionPath } : { message };
+}
+
 function respondToExtension(request: ExtensionRequest, accepted: boolean) {
-  client.command("extension_ui_response", extensionResponsePayload(request, accepted));
+  const payload = extensionResponsePayload(request, accepted);
+  client.command("extension_ui_response", request.sessionPath ? { ...payload, sessionPath: request.sessionPath } : payload);
   acknowledgeExtensionRequest(session, request.id);
   extensionValue.value = "";
 }
@@ -287,7 +294,8 @@ function handleBridgeMessage(message: BridgeMessage) {
     if (message.type === "error") {
       status.value = "error";
       isSessionLoading.value = false;
-      session.statusText = message.message ?? "Bridge error";
+      const errorText = message.message ?? "Bridge error";
+      session.statusText = activePiSession.value ? `Pi request failed: ${errorText}` : errorText;
     }
     if (message.type === "sessions") {
       piSessions.value = message.sessions;
@@ -296,6 +304,10 @@ function handleBridgeMessage(message: BridgeMessage) {
       isSessionLoading.value = false;
       session.statusText = message.message;
     }
+    return;
+  }
+
+  if (!isActivePiMessage(message)) {
     return;
   }
 
@@ -311,8 +323,9 @@ function handleBridgeMessage(message: BridgeMessage) {
   }
 
   if (message.type === "event") {
-    prefillEditorPrompt(message.event);
-    reduceSessionEvent(session, message.event);
+    const event = piEventWithSessionPath(message.event, message.sessionPath);
+    prefillEditorPrompt(event);
+    reduceSessionEvent(session, event);
     return;
   }
 
@@ -330,6 +343,19 @@ function handleBridgeMessage(message: BridgeMessage) {
   status.value = "error";
   isSessionLoading.value = false;
   session.statusText = message.message;
+}
+
+function isActivePiMessage(message: Extract<BridgeMessage, { source: "pi" }>): boolean {
+  const activePath = activePiSession.value?.path;
+  if (message.sessionPath) {
+    return message.sessionPath === activePath;
+  }
+
+  return !activePath;
+}
+
+function piEventWithSessionPath(event: Record<string, unknown>, sessionPath: string | undefined): Record<string, unknown> {
+  return sessionPath ? { ...event, sessionPath } : event;
 }
 
 function applyPiResponse(response: Record<string, unknown>) {
