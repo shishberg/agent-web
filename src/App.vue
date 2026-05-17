@@ -4,6 +4,7 @@ import { Eye, EyeOff, Info, Moon, Monitor, PanelLeftClose, PanelLeftOpen, Plus, 
 import Conversation from "./components/ai-elements/Conversation.vue";
 import Message from "./components/ai-elements/Message.vue";
 import PromptInput from "./components/ai-elements/PromptInput.vue";
+import Shimmer from "./components/ai-elements/Shimmer.vue";
 import { renderMarkdown } from "./lib/markdown";
 import { RpcClient, type BridgeMessage, type BridgeStatus, type PiSessionSummary } from "./lib/rpcClient";
 import {
@@ -547,7 +548,16 @@ function readNonMessageResponsePreference(): boolean {
 }
 
 function shouldShowMessage(message: SessionMessage): boolean {
-  return showNonMessageResponses.value || Boolean(message.content) || (!message.thinking && message.tools.length === 0);
+  return (
+    showNonMessageResponses.value ||
+    Boolean(message.content) ||
+    shouldShowMessageShimmer(message) ||
+    (!message.thinking && message.tools.length === 0)
+  );
+}
+
+function shouldShowMessageShimmer(message: SessionMessage): boolean {
+  return message.role === "assistant" && message.status === "streaming" && !message.content;
 }
 
 function applyTheme() {
@@ -673,11 +683,9 @@ async function scrollMessagesToEnd() {
                   </summary>
                   <pre>{{ tool.content }}</pre>
                 </details>
-                <div
-                  v-if="message.content || (!message.thinking && message.tools.length === 0)"
-                  class="message-markdown"
-                  v-html="renderMarkdown(message.content || '...')"
-                ></div>
+                <div v-if="message.content" class="message-markdown" v-html="renderMarkdown(message.content)"></div>
+                <Shimmer v-else-if="shouldShowMessageShimmer(message)" />
+                <div v-else-if="!message.thinking && message.tools.length === 0" class="message-markdown"></div>
               </Message>
             </template>
 

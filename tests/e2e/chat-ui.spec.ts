@@ -211,6 +211,139 @@ test("renders streaming tool lifecycle events as styled tool details", async ({ 
   await expect(page.locator(".message-markdown")).not.toContainText("running pwd");
 });
 
+test("renders streaming thinking and placeholder with the final message shape", async ({ page }) => {
+  let wsRoute: { send: (message: string) => void } | undefined;
+
+  await page.routeWebSocket("/rpc", (ws) => {
+    wsRoute = ws;
+    ws.onMessage((message) => {
+      const payload = JSON.parse(typeof message === "string" ? message : message.toString()) as { command?: string };
+      if (payload.command === "list_sessions") {
+        ws.send(JSON.stringify({ source: "bridge", type: "sessions", sessions: [] }));
+      }
+    });
+  });
+
+  await page.goto("/");
+  await expect.poll(() => Boolean(wsRoute)).toBe(true);
+
+  wsRoute?.send(
+    JSON.stringify({
+      source: "pi",
+      type: "event",
+      event: { type: "message_start", message: { id: "assistant-thinking", role: "assistant" } }
+    })
+  );
+
+  const message = page.locator(".message-assistant").first();
+  await expect(message).toHaveCount(1);
+  await expect(message.locator(".message-shimmer")).toBeVisible();
+
+  wsRoute?.send(
+    JSON.stringify({
+      source: "pi",
+      type: "event",
+      event: {
+        type: "message_update",
+        message: { id: "assistant-thinking", role: "assistant" },
+        assistantMessageEvent: { type: "thinking_delta", delta: "Checking the reducer." }
+      }
+    })
+  );
+
+  const thinking = message.locator(".thinking").first();
+  await expect(thinking).toHaveCount(1);
+  await expect(thinking.locator("summary")).toContainText("Thinking");
+  await expect(thinking.locator("pre")).toContainText("Checking the reducer.");
+  await expect(message.locator(".message-shimmer")).toBeVisible();
+
+  const sectionClassesWhileStreaming = await thinking.evaluate((element) => element.className);
+  wsRoute?.send(
+    JSON.stringify({
+      source: "pi",
+      type: "event",
+      event: {
+        type: "message_end",
+        message: {
+          id: "assistant-thinking",
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "Checking the reducer." },
+            { type: "text", text: "Done." }
+          ]
+        }
+      }
+    })
+  );
+
+  await expect(message.locator(".thinking")).toHaveCount(1);
+  await expect(message.locator(".thinking")).toHaveClass(sectionClassesWhileStreaming);
+  await expect(message.locator(".message-markdown")).toContainText("Done.");
+  await expect(message.locator(".message-shimmer")).toHaveCount(0);
+});
+
+test("keeps the streaming placeholder visible when thinking and tools are hidden", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("agent-web-show-non-message-responses", "false");
+  });
+
+  let wsRoute: { send: (message: string) => void } | undefined;
+
+  await page.routeWebSocket("/rpc", (ws) => {
+    wsRoute = ws;
+    ws.onMessage((message) => {
+      const payload = JSON.parse(typeof message === "string" ? message : message.toString()) as { command?: string };
+      if (payload.command === "list_sessions") {
+        ws.send(JSON.stringify({ source: "bridge", type: "sessions", sessions: [] }));
+      }
+    });
+  });
+
+  await page.goto("/");
+  await expect.poll(() => Boolean(wsRoute)).toBe(true);
+
+  wsRoute?.send(
+    JSON.stringify({
+      source: "pi",
+      type: "event",
+      event: { type: "message_start", message: { id: "assistant-hidden", role: "assistant" } }
+    })
+  );
+  const message = page.locator(".message-assistant").first();
+  await expect(message.locator(".message-shimmer")).toBeVisible();
+
+  wsRoute?.send(
+    JSON.stringify({
+      source: "pi",
+      type: "event",
+      event: {
+        type: "message_update",
+        message: { id: "assistant-hidden", role: "assistant" },
+        assistantMessageEvent: { type: "thinking_delta", delta: "Hidden thinking." }
+      }
+    })
+  );
+  await expect(page.locator(".message-assistant")).toHaveCount(1);
+  await expect(message.locator(".message-shimmer")).toBeVisible();
+  await expect(message.locator(".thinking")).toHaveCount(0);
+
+  wsRoute?.send(
+    JSON.stringify({
+      source: "pi",
+      type: "event",
+      event: {
+        type: "tool_execution_start",
+        toolCallId: "call_hidden",
+        toolName: "bash",
+        args: { command: "pwd" }
+      }
+    })
+  );
+  await expect(page.locator(".message-assistant")).toHaveCount(1);
+  await expect(message.locator(".message-shimmer")).toBeVisible();
+  await expect(message.locator(".tool-detail")).toHaveCount(0);
+});
+
 test("renders tool lifecycle events before the assistant message starts", async ({ page }) => {
   let wsRoute: { send: (message: string) => void } | undefined;
 

@@ -96,6 +96,29 @@ describe("session state reducer", () => {
     ]);
   });
 
+  it("shows streaming thinking before message_end", () => {
+    const state = createInitialSessionState();
+
+    reduceSessionEvent(state, { type: "message_start", message: { id: "assistant-1", role: "assistant" } });
+    reduceSessionEvent(state, {
+      type: "message_update",
+      message: { id: "assistant-1", role: "assistant" },
+      assistantMessageEvent: { type: "thinking_delta", delta: "Inspecting the session state." }
+    });
+
+    expect(state.messages).toEqual([
+      expect.objectContaining({
+        id: "assistant-1",
+        role: "assistant",
+        content: "",
+        thinking: "Inspecting the session state.",
+        tools: [],
+        status: "streaming"
+      })
+    ]);
+    expect(state.activeMessageId).toBe("assistant-1");
+  });
+
   it("ignores message updates that include message.id without message.role", () => {
     const state = createInitialSessionState();
 
@@ -160,6 +183,35 @@ describe("session state reducer", () => {
     expect(state.queue).toEqual([
       { id: "steering-0", command: "steer", label: "fix this", value: "fix this" },
       { id: "followUp-0", command: "follow_up", label: "summarize", value: "summarize" }
+    ]);
+  });
+
+  it("attaches an in-progress tool to the active streamed message before message_end", () => {
+    const state = createInitialSessionState();
+
+    reduceSessionEvent(state, { type: "message_start", message: { id: "assistant-1", role: "assistant" } });
+    reduceSessionEvent(state, {
+      type: "tool_execution_start",
+      toolCallId: "tool-1",
+      toolName: "bash",
+      args: { command: "pwd" }
+    });
+
+    expect(state.messages).toEqual([
+      expect.objectContaining({
+        id: "assistant-1",
+        status: "streaming",
+        tools: [
+          expect.objectContaining({
+            key: "tool-1",
+            label: "bash",
+            detail: "pwd",
+            status: "running",
+            statusLabel: "In progress",
+            content: ""
+          })
+        ]
+      })
     ]);
   });
 

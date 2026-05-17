@@ -720,6 +720,44 @@ pre {
   border-color: #10b981;
 }
 
+.message-shimmer {
+  display: grid;
+  width: 180px;
+  max-width: 100%;
+  min-height: 38px;
+  gap: 7px;
+  padding: 2px 0;
+}
+
+.message-shimmer span {
+  display: block;
+  height: 8px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgb(107 114 128 / 0.12), rgb(107 114 128 / 0.28), rgb(107 114 128 / 0.12));
+  background-size: 200% 100%;
+  animation: shimmer 1.15s ease-in-out infinite;
+}
+
+.message-shimmer span:nth-child(2) {
+  width: 72%;
+}
+
+.message-shimmer span:nth-child(3) {
+  width: 42%;
+}
+
+@keyframes shimmer {
+  to {
+    background-position-x: -200%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message-shimmer span {
+    animation: none;
+  }
+}
+
 .thinking,
 .inline-activity {
   border: 1px dashed #d1d5db;
