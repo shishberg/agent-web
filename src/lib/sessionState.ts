@@ -90,6 +90,7 @@ export type PiResponse = {
 };
 
 let generatedId = 0;
+const TOOL_LIFECYCLE_MESSAGE_PREFIX = "tool-lifecycle-message-";
 
 export function createInitialSessionState(): SessionState {
   return {
@@ -139,7 +140,9 @@ export function reduceSessionEvent(state: SessionState, event: PiEvent): Session
         break;
       }
       state.activeMessageId = id;
-      applyCompleteMessage(upsertMessage(state, id, role, "streaming"), event);
+      const message = upsertMessage(state, id, role, "streaming");
+      applyCompleteMessage(message, event);
+      mergePendingToolLifecycleMessage(state, message);
       break;
     }
     case "message_update":
@@ -151,7 +154,9 @@ export function reduceSessionEvent(state: SessionState, event: PiEvent): Session
       if (!id || !role || role === "user") {
         break;
       }
-      applyCompleteMessage(upsertMessage(state, id, role, "done"), event);
+      const message = upsertMessage(state, id, role, "done");
+      applyCompleteMessage(message, event);
+      mergePendingToolLifecycleMessage(state, message);
       if (state.activeMessageId === id) {
         state.activeMessageId = null;
       }
@@ -436,11 +441,71 @@ function assistantMessageForToolPart(state: SessionState, key: string): SessionM
   if (activeMessage) {
     return activeMessage;
   }
-  return undefined;
+
+  const pendingToolMessage = pendingToolLifecycleMessage(state);
+  if (pendingToolMessage) {
+    state.activeMessageId = pendingToolMessage.id;
+    return pendingToolMessage;
+  }
+
+  const message = upsertMessage(state, `${TOOL_LIFECYCLE_MESSAGE_PREFIX}${key}`, "assistant", "streaming");
+  state.activeMessageId = message.id;
+  return message;
 }
 
 function messageForExistingToolPart(state: Pick<SessionState, "messages">, key: string): SessionMessage | undefined {
   return state.messages.find((message) => message.tools.some((tool) => tool.key === key));
+}
+
+function pendingToolLifecycleMessage(state: Pick<SessionState, "messages">): SessionMessage | undefined {
+  const index = pendingToolLifecycleMessageIndex(state);
+  return index === -1 ? undefined : state.messages[index];
+}
+
+function pendingToolLifecycleMessageIndex(state: Pick<SessionState, "messages">): number {
+  for (let index = state.messages.length - 1; index >= 0; index -= 1) {
+    const message = state.messages[index];
+    if (
+      message.id.startsWith(TOOL_LIFECYCLE_MESSAGE_PREFIX) &&
+      message.role === "assistant" &&
+      message.status === "streaming" &&
+      !message.content &&
+      !message.thinking &&
+      message.tools.length > 0
+    ) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function mergePendingToolLifecycleMessage(state: SessionState, target: SessionMessage): void {
+  const pendingIndex = pendingToolLifecycleMessageIndex(state);
+  if (pendingIndex === -1) {
+    return;
+  }
+
+  const pending = state.messages[pendingIndex];
+  if (pending === target) {
+    return;
+  }
+
+  const matchingTools = pending.tools.filter((tool) => target.tools.some((targetTool) => targetTool.key === tool.key));
+  if (matchingTools.length === 0) {
+    return;
+  }
+
+  for (const tool of matchingTools) {
+    mergeToolPart(target, tool);
+  }
+
+  pending.tools = pending.tools.filter((tool) => !matchingTools.some((matchingTool) => matchingTool.key === tool.key));
+  if (pending.tools.length === 0) {
+    state.messages.splice(pendingIndex, 1);
+  }
+  if (state.activeMessageId === pending.id && pending.tools.length === 0) {
+    state.activeMessageId = target.id;
+  }
 }
 
 function mergeToolPart(message: Pick<SessionMessage, "tools">, incoming: MessageToolPart): void {

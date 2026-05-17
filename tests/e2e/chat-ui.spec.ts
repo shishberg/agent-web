@@ -163,6 +163,14 @@ test("renders streaming tool lifecycle events as styled tool details", async ({ 
       }
     })
   );
+
+  const toolDetail = page.locator(".tool-detail").first();
+  await expect(toolDetail).toHaveCount(1);
+  await expect(toolDetail.locator("summary")).toContainText("bash");
+  await expect(toolDetail.locator("summary")).toContainText("pwd");
+  await expect(toolDetail.locator("summary")).toContainText("In progress");
+  await expect(toolDetail.locator(".tool-status-dot")).toHaveAttribute("title", "In progress");
+
   wsRoute?.send(
     JSON.stringify({
       source: "pi",
@@ -193,7 +201,6 @@ test("renders streaming tool lifecycle events as styled tool details", async ({ 
 
   await expect(page.getByText("Let me inspect that.")).toBeVisible();
 
-  const toolDetail = page.locator(".tool-detail").first();
   await expect(toolDetail).toHaveCount(1);
   await expect(toolDetail.locator("summary")).toContainText("bash");
   await expect(toolDetail.locator("summary")).toContainText("pwd");
@@ -202,6 +209,65 @@ test("renders streaming tool lifecycle events as styled tool details", async ({ 
   await expect(toolDetail.locator("pre")).toContainText("/Users/agent/src/agent-web");
   await expect(page.getByText("Tool call")).toHaveCount(0);
   await expect(page.locator(".message-markdown")).not.toContainText("running pwd");
+});
+
+test("renders tool lifecycle events before the assistant message starts", async ({ page }) => {
+  let wsRoute: { send: (message: string) => void } | undefined;
+
+  await page.routeWebSocket("/rpc", (ws) => {
+    wsRoute = ws;
+    ws.onMessage((message) => {
+      const payload = JSON.parse(typeof message === "string" ? message : message.toString()) as { command?: string };
+      if (payload.command === "list_sessions") {
+        ws.send(JSON.stringify({ source: "bridge", type: "sessions", sessions: [] }));
+      }
+    });
+  });
+
+  await page.goto("/");
+  await expect.poll(() => Boolean(wsRoute)).toBe(true);
+
+  wsRoute?.send(
+    JSON.stringify({
+      source: "pi",
+      type: "event",
+      event: {
+        type: "tool_execution_start",
+        toolCallId: "call_early",
+        toolName: "bash",
+        args: { command: "pwd" }
+      }
+    })
+  );
+
+  const toolDetail = page.locator(".tool-detail").first();
+  await expect(toolDetail).toHaveCount(1);
+  await expect(toolDetail.locator("summary")).toContainText("bash");
+  await expect(toolDetail.locator("summary")).toContainText("pwd");
+  await expect(toolDetail.locator(".tool-status-dot")).toHaveAttribute("title", "In progress");
+
+  wsRoute?.send(
+    JSON.stringify({
+      source: "pi",
+      type: "event",
+      event: { type: "message_start", message: { id: "assistant-early", role: "assistant" } }
+    })
+  );
+  wsRoute?.send(
+    JSON.stringify({
+      source: "pi",
+      type: "event",
+      event: {
+        type: "message_update",
+        message: { id: "assistant-early", role: "assistant" },
+        assistantMessageEvent: { type: "text_delta", delta: "Checking." }
+      }
+    })
+  );
+
+  await expect(page.getByText("Checking.")).toBeVisible();
+  await expect(page.locator(".tool-detail")).toHaveCount(1);
+  await expect(toolDetail.locator(".tool-status-dot")).toHaveAttribute("title", "In progress");
 });
 
 test("sends active-turn composer input as queued prompts", async ({ page }) => {

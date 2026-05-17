@@ -123,6 +123,17 @@ describe("session state reducer", () => {
       toolName: "bash",
       args: { command: "pwd" }
     });
+    expect(state.messages[0].tools).toEqual([
+      expect.objectContaining({
+        key: "tool-1",
+        label: "bash",
+        detail: "pwd",
+        status: "running",
+        statusLabel: "In progress",
+        content: ""
+      })
+    ]);
+
     reduceSessionEvent(state, {
       type: "tool_execution_update",
       toolCallId: "tool-1",
@@ -391,6 +402,47 @@ describe("session state reducer", () => {
     );
   });
 
+  it("message_end merges an early tool lifecycle message when structured content has the same tool key", () => {
+    const state = createInitialSessionState();
+
+    reduceSessionEvent(state, {
+      type: "tool_execution_start",
+      toolCallId: "tool-1",
+      toolName: "bash",
+      args: { command: "pwd" }
+    });
+    reduceSessionEvent(state, {
+      type: "message_end",
+      message: {
+        id: "assistant-1",
+        role: "assistant",
+        content: [
+          { type: "text", text: "Done." },
+          { type: "toolCall", id: "tool-1", name: "bash", arguments: { command: "pwd" } },
+          { type: "tool_result", toolCallId: "tool-1", content: [{ type: "text", text: "/tmp" }] }
+        ]
+      }
+    });
+
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]).toEqual(
+      expect.objectContaining({
+        id: "assistant-1",
+        content: "Done.",
+        status: "done",
+        tools: [
+          expect.objectContaining({
+            key: "tool-1",
+            label: "bash",
+            detail: "pwd",
+            status: "done",
+            content: "/tmp"
+          })
+        ]
+      })
+    );
+  });
+
   it("ID-less partial input JSON never renders as a tool", () => {
     const state = createInitialSessionState();
 
@@ -496,7 +548,7 @@ describe("session state reducer", () => {
     ]);
   });
 
-  it("stores tool execution events outside messages when there is no active assistant message", () => {
+  it("keeps early tool execution events separate until assistant content names the same tool key", () => {
     const state = createInitialSessionState();
 
     reduceSessionEvent(state, {
@@ -505,7 +557,23 @@ describe("session state reducer", () => {
       toolName: "bash",
       args: { command: "pwd" }
     });
-    expect(state.messages).toEqual([]);
+    expect(state.messages).toEqual([
+      expect.objectContaining({
+        role: "assistant",
+        status: "streaming",
+        content: "",
+        tools: [
+          expect.objectContaining({
+            key: "tool-1",
+            label: "bash",
+            detail: "pwd",
+            status: "running",
+            statusLabel: "In progress",
+            content: ""
+          })
+        ]
+      })
+    ]);
     expect(state.tools).toEqual([expect.objectContaining({ id: "tool-1", status: "running" })]);
 
     reduceSessionEvent(state, { type: "message_start", message: { id: "assistant-1", role: "assistant" } });
@@ -515,11 +583,90 @@ describe("session state reducer", () => {
       assistantMessageEvent: { type: "text_delta", delta: "Checking." }
     });
 
-    expect(state.messages).toHaveLength(1);
+    expect(state.messages).toHaveLength(2);
     expect(state.messages[0]).toEqual(
+      expect.objectContaining({
+        id: expect.stringMatching(/^tool-lifecycle-message-tool-1$/),
+        tools: [
+          expect.objectContaining({
+            key: "tool-1",
+            status: "running"
+          })
+        ]
+      })
+    );
+    expect(state.messages[1]).toEqual(
       expect.objectContaining({
         id: "assistant-1",
         content: "Checking.",
+        tools: []
+      })
+    );
+  });
+
+  it("keeps early tool execution events separate when text updates create the assistant message first", () => {
+    const state = createInitialSessionState();
+
+    reduceSessionEvent(state, {
+      type: "tool_execution_start",
+      toolCallId: "tool-1",
+      toolName: "bash",
+      args: { command: "pwd" }
+    });
+    reduceSessionEvent(state, {
+      type: "message_update",
+      message: { id: "assistant-1", role: "assistant" },
+      assistantMessageEvent: { type: "text_delta", delta: "Checking." }
+    });
+
+    expect(state.messages).toHaveLength(2);
+    expect(state.messages[0]).toEqual(
+      expect.objectContaining({
+        id: expect.stringMatching(/^tool-lifecycle-message-tool-1$/),
+        tools: [
+          expect.objectContaining({
+            key: "tool-1",
+            label: "bash",
+            detail: "pwd",
+            status: "running"
+          })
+        ]
+      })
+    );
+    expect(state.messages[1]).toEqual(
+      expect.objectContaining({
+        id: "assistant-1",
+        content: "Checking.",
+        tools: []
+      })
+    );
+
+    reduceSessionEvent(state, { type: "message_start", message: { id: "assistant-1", role: "assistant" } });
+
+    expect(state.messages).toHaveLength(2);
+  });
+
+  it("does not rewrite an early tool lifecycle message to an unrelated later assistant id", () => {
+    const state = createInitialSessionState();
+
+    reduceSessionEvent(state, {
+      type: "tool_execution_start",
+      toolCallId: "tool-1",
+      toolName: "bash",
+      args: { command: "pwd" }
+    });
+    reduceSessionEvent(state, { type: "message_start", message: { id: "assistant-1", role: "assistant" } });
+
+    expect(state.messages).toHaveLength(2);
+    expect(state.messages[0]).toEqual(
+      expect.objectContaining({
+        id: "tool-lifecycle-message-tool-1",
+        tools: [expect.objectContaining({ key: "tool-1" })]
+      })
+    );
+    expect(state.messages[1]).toEqual(
+      expect.objectContaining({
+        id: "assistant-1",
         tools: []
       })
     );
