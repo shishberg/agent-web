@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { Info, Moon, Monitor, PanelLeftClose, PanelLeftOpen, Plus, Sun, X } from "@lucide/vue";
+import { Eye, EyeOff, Info, Moon, Monitor, PanelLeftClose, PanelLeftOpen, Plus, Sun, X } from "@lucide/vue";
 import Conversation from "./components/ai-elements/Conversation.vue";
 import Message from "./components/ai-elements/Message.vue";
 import PromptInput from "./components/ai-elements/PromptInput.vue";
@@ -14,6 +14,7 @@ import {
   reduceSessionEvent,
   reduceSessionResponse,
   type ExtensionRequest,
+  type SessionMessage,
   type SessionState
 } from "./lib/sessionState";
 
@@ -34,6 +35,7 @@ const status = ref<BridgeStatus>("idle");
 const stderr = ref<string[]>([]);
 const extensionValue = ref("");
 const sidebarCollapsed = ref(false);
+const showNonMessageResponses = ref(readNonMessageResponsePreference());
 const themePreference = ref<ThemePreference>(readThemePreference());
 const messageScroller = ref<HTMLElement | null>(null);
 const isSessionLoading = ref(false);
@@ -85,7 +87,11 @@ const connectionLabel = computed(() => {
 const statusBadge = computed(() => (session.running ? "Running" : connectionLabel.value));
 const themeIcon = computed(() => ({ light: Sun, dark: Moon, system: Monitor })[themePreference.value]);
 const sidebarIcon = computed(() => (sidebarCollapsed.value ? PanelLeftOpen : PanelLeftClose));
+const nonMessageResponseIcon = computed(() => (showNonMessageResponses.value ? Eye : EyeOff));
 const themeTitle = computed(() => `Theme: ${themePreference.value}`);
+const nonMessageResponseTitle = computed(() =>
+  showNonMessageResponses.value ? "Hide thinking and tool calls" : "Show thinking and tool calls"
+);
 const sessionError = computed(() => (session.statusText.startsWith("Pi request failed") ? session.statusText : ""));
 const toolActivitySignature = computed(() =>
   session.messages
@@ -145,6 +151,10 @@ watch(
 watch(themePreference, (value) => {
   localStorage.setItem("agent-web-theme", value);
   applyTheme();
+});
+
+watch(showNonMessageResponses, (value) => {
+  localStorage.setItem("agent-web-show-non-message-responses", value ? "true" : "false");
 });
 
 watch(metadataOpen, async (open) => {
@@ -451,6 +461,14 @@ function readThemePreference(): ThemePreference {
   return stored === "light" || stored === "dark" || stored === "system" ? stored : "system";
 }
 
+function readNonMessageResponsePreference(): boolean {
+  return localStorage.getItem("agent-web-show-non-message-responses") !== "false";
+}
+
+function shouldShowMessage(message: SessionMessage): boolean {
+  return showNonMessageResponses.value || Boolean(message.content) || (!message.thinking && message.tools.length === 0);
+}
+
 function applyTheme() {
   const prefersDark = systemThemeQuery?.matches ?? window.matchMedia("(prefers-color-scheme: dark)").matches;
   const dark = themePreference.value === "dark" || (themePreference.value === "system" && prefersDark);
@@ -510,6 +528,16 @@ async function scrollMessagesToEnd() {
         <h1>{{ activeTitle }}</h1>
         <div class="status-actions">
           <span class="status-pill" :class="status">{{ statusBadge }}</span>
+          <button
+            class="icon-button"
+            type="button"
+            :aria-label="nonMessageResponseTitle"
+            :title="nonMessageResponseTitle"
+            :aria-pressed="showNonMessageResponses"
+            @click="showNonMessageResponses = !showNonMessageResponses"
+          >
+            <component :is="nonMessageResponseIcon" :size="18" aria-hidden="true" />
+          </button>
           <button ref="sessionDetailsButton" class="icon-button" type="button" aria-label="Session details" title="Session details" @click="openMetadata">
             <Info :size="18" aria-hidden="true" />
           </button>
@@ -535,42 +563,43 @@ async function scrollMessagesToEnd() {
           </div>
 
           <div class="message-stack">
-            <Message
-              v-for="message in session.messages"
-              :key="message.id"
-              :role="message.role"
-              :streaming="message.status === 'streaming'"
-              :copy-text="message.content || undefined"
-            >
-              <details v-if="message.thinking" class="thinking">
-                <summary>Thinking</summary>
-                <pre>{{ message.thinking }}</pre>
-              </details>
-              <details v-for="tool in message.tools" :key="`${message.id}-${tool.key}`" class="thinking tool-detail">
-                <summary>
-                  <span class="tool-summary-text">
-                    <span class="tool-summary-name">{{ tool.label }}</span>
-                    <span v-if="tool.detail" class="tool-summary-detail">{{ tool.detail }}</span>
-                    <span v-if="tool.statusLabel" class="visually-hidden">, {{ tool.statusLabel }}</span>
-                  </span>
-                  <span
-                    v-if="tool.status"
-                    class="tool-status-dot"
-                    :class="`tool-status-dot-${tool.status}`"
-                    :title="tool.statusLabel"
-                    aria-hidden="true"
-                  ></span>
-                </summary>
-                <pre>{{ tool.content }}</pre>
-              </details>
-              <div
-                v-if="message.content || (!message.thinking && message.tools.length === 0)"
-                class="message-markdown"
-                v-html="renderMarkdown(message.content || '...')"
-              ></div>
-            </Message>
+            <template v-for="message in session.messages" :key="message.id">
+              <Message
+                v-if="shouldShowMessage(message)"
+                :role="message.role"
+                :streaming="message.status === 'streaming'"
+                :copy-text="message.content || undefined"
+              >
+                <details v-if="showNonMessageResponses && message.thinking" class="thinking">
+                  <summary>Thinking</summary>
+                  <pre>{{ message.thinking }}</pre>
+                </details>
+                <details v-for="tool in showNonMessageResponses ? message.tools : []" :key="`${message.id}-${tool.key}`" class="thinking tool-detail">
+                  <summary>
+                    <span class="tool-summary-text">
+                      <span class="tool-summary-name">{{ tool.label }}</span>
+                      <span v-if="tool.detail" class="tool-summary-detail">{{ tool.detail }}</span>
+                      <span v-if="tool.statusLabel" class="visually-hidden">, {{ tool.statusLabel }}</span>
+                    </span>
+                    <span
+                      v-if="tool.status"
+                      class="tool-status-dot"
+                      :class="`tool-status-dot-${tool.status}`"
+                      :title="tool.statusLabel"
+                      aria-hidden="true"
+                    ></span>
+                  </summary>
+                  <pre>{{ tool.content }}</pre>
+                </details>
+                <div
+                  v-if="message.content || (!message.thinking && message.tools.length === 0)"
+                  class="message-markdown"
+                  v-html="renderMarkdown(message.content || '...')"
+                ></div>
+              </Message>
+            </template>
 
-            <details v-if="session.queue.length" class="inline-activity">
+            <details v-if="showNonMessageResponses && session.queue.length" class="inline-activity">
               <summary>{{ session.queue.length }} queued command{{ session.queue.length === 1 ? "" : "s" }}</summary>
               <ol class="compact-list">
                 <li v-for="item in session.queue" :key="String(item.id ?? item.command)">
@@ -579,7 +608,7 @@ async function scrollMessagesToEnd() {
               </ol>
             </details>
 
-            <details v-if="stderr.length" class="inline-activity error-row">
+            <details v-if="showNonMessageResponses && stderr.length" class="inline-activity error-row">
               <summary>stderr</summary>
               <pre>{{ stderr.join('') }}</pre>
             </details>
