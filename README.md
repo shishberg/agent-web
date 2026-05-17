@@ -6,6 +6,8 @@ The browser connects to the web service at `/rpc`. The web service keeps that br
 
 ## Install
 
+Requires Node.js 20 or newer.
+
 ```sh
 npm install
 npx playwright install chromium
@@ -27,18 +29,22 @@ The runner service binds to `127.0.0.1:4178` by default, exposes `GET /health`, 
 ## Scripts
 
 ```sh
+npm run dev
+npm run dev:web
+npm run dev:runner
 npm test
+npm run test:watch
 npm run test:e2e
 npm run typecheck
 npm run build
-npm run dev:runner
-npm run dev:web
 npm run preview
 ```
 
+`npm run dev` and `npm run dev:web` both start the web service.
+
 ## Notes
 
-- Browser `/rpc` messages stay shaped as `{ type: "command", command, payload }`; the web-to-runner protocol adds local routing metadata and a versioned handshake.
+- Browser `/rpc` command messages stay shaped as `{ type: "command", command, payload }`; the browser can also send `{ type: "disconnect" }`. The web-to-runner protocol adds local routing metadata and a versioned handshake.
 - RPC framing to Pi is handled with strict LF-delimited JSON records, matching Pi's RPC docs.
 - The UI supports prompts, new chats, saved-session browsing, session metadata, optional thinking and tool details, queued-command and stderr details, and extension UI dialogs.
 - The local components under `src/components/ai-elements` follow the Conversation, Message, and Prompt Input patterns from AI Elements Vue without requiring generated component downloads.
