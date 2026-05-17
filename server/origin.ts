@@ -14,7 +14,7 @@ export function isAllowedOrigin(origin: string | undefined, bindHost: string, po
 export function allowedOrigins(bindHost: string, port: number): Set<string> {
   const hosts = new Set([normalizeHostname(bindHost), "kodama.local"]);
 
-  if (isLoopbackHost(bindHost)) {
+  if (isLoopbackHost(bindHost) || isWildcardHost(bindHost)) {
     hosts.add("localhost");
     hosts.add("127.0.0.1");
     hosts.add("::1");
@@ -56,4 +56,9 @@ function defaultPort(protocol: string): string {
 function isLoopbackHost(host: string): boolean {
   const normalized = normalizeHostname(host);
   return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
+}
+
+function isWildcardHost(host: string): boolean {
+  const normalized = normalizeHostname(host);
+  return normalized === "0.0.0.0" || normalized === "::";
 }

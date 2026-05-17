@@ -6,7 +6,13 @@ describe("WebSocket origin checks", () => {
     expect(isAllowedOrigin("http://127.0.0.1:4177", "127.0.0.1", 4177)).toBe(true);
     expect(isAllowedOrigin("http://localhost:4177", "127.0.0.1", 4177)).toBe(true);
     expect(isAllowedOrigin("http://kodama.local:4177", "127.0.0.1", 4177)).toBe(true);
+    expect(isAllowedOrigin("http://localhost:4177", "0.0.0.0", 4177)).toBe(true);
+    expect(isAllowedOrigin("http://127.0.0.1:4177", "0.0.0.0", 4177)).toBe(true);
+    expect(isAllowedOrigin("http://[::1]:4177", "0.0.0.0", 4177)).toBe(true);
     expect(isAllowedOrigin("http://kodama.local:4177", "0.0.0.0", 4177)).toBe(true);
+    expect(isAllowedOrigin("http://localhost:4177", "::", 4177)).toBe(true);
+    expect(isAllowedOrigin("http://127.0.0.1:4177", "[::]", 4177)).toBe(true);
+    expect(isAllowedOrigin("http://[::1]:4177", "::", 4177)).toBe(true);
     expect(isAllowedOrigin("http://[::1]:4177", "::1", 4177)).toBe(true);
   });
 
