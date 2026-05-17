@@ -13,25 +13,25 @@ This document captures the session execution model for Agent Web. The goal is to
 
 ## Preferred Architecture
 
-Use a per-session backend runner for active turns, with a one-shot process as the baseline behavior.
+Use a per-session backend runner for active turns. The current implementation keeps each runner warm until it exits or the browser connection is disposed; a stricter one-shot runner can still be introduced later if it preserves the invariants below.
 
 When the user sends a message:
 
 1. The frontend sends the message for the exact target session.
 2. The backend starts work for that session ID or path.
 3. Switching to another UI session does not stop, retarget, or mutate the active turn.
-4. The runner exits after the turn is complete and the result has been persisted by Pi.
+4. Pi persists the turn to its own session history.
 5. Saved messages are read back from Pi session history on disk.
 
 This keeps session ownership explicit: the browser can observe and navigate, but the backend decides which Pi session a running turn belongs to.
 
 ## Queued Messages
 
-If a user sends another normal message while a runner is already active for that session:
+If a user sends another normal message while a runner is already active for that session, the backend reuses the same runner and sends Pi a `prompt` command with `streamingBehavior`.
 
-- Queue the new message behind the current runner.
-- Let the current turn finish and persist.
-- Start a new one-shot runner for the queued message against the same session.
+- `streamingBehavior: "steer"` asks Pi to deliver the message before the next model call.
+- `streamingBehavior: "followUp"` asks Pi to wait until the current agent work finishes.
+- The app-level `queueMode` field is stripped before forwarding the command to Pi.
 
 The queue is per session. Work in one session should not block independent work in another session.
 
@@ -39,10 +39,10 @@ The queue is per session. Work in one session should not block independent work 
 
 If a user sends a steering message that is meant to redirect the current turn for the same session:
 
-- Interrupt or cancel the current runner for that session.
-- Prefer a graceful Pi cancel or abort API when one is available.
+- Prefer Pi's streaming queue behavior (`streamingBehavior: "steer"`) while the turn is active.
+- Do not create a second runner for the same session.
+- If a future UI action needs hard cancellation, prefer a graceful Pi cancel or abort API when one is available.
 - Use a hard process kill only as a fallback.
-- Start a new runner for the steering message only after cancellation has completed and any final Pi events have been flushed or accounted for.
 
 Hard kill is a fallback because it may risk losing tail events that Pi has not flushed yet.
 
@@ -64,7 +64,7 @@ A warm per-session runner with an idle TTL is acceptable later if it preserves t
 
 ## Non-goals / Deferred
 
-- Do not default to a persistent process for every old session. Lifecycle cleanup gets harder, and the baseline should stay simpler.
+- Do not start a process merely because an old session is viewed. Runner processes are created by live commands, not navigation.
 - Do not make the frontend maintain its own saved-message store. Pi owns persisted session history.
 - Do not let viewing, selection, refresh, collapse, or inspection actions create, resume, cancel, or retarget Pi sessions.
-- Do not solve the warm-runner optimization until the one-shot model is correct and observable.
+- Do not add process-killing steering behavior until it is clear Pi's own streaming queue is insufficient.
