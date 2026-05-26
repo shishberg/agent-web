@@ -9,6 +9,7 @@ import { PiDirectSessionManager } from "./backends/piDirect/piDirectSessionManag
 import { RunnerClient } from "./runnerClient";
 import type { BrowserClientMessage } from "./runnerProtocol";
 import { createSessionStreamHandler } from "./sessionStream";
+import { createSessionApiHandler } from "./sessionApiRoutes";
 
 export const DEFAULT_PORT = 4177;
 
@@ -28,9 +29,16 @@ const sessionManager = new PiDirectSessionManager({
 const handleSessionStream = createSessionStreamHandler({
   manager: sessionManager,
 });
+const handleSessionApi = createSessionApiHandler({
+  manager: sessionManager,
+});
 
 const server = createServer(async (req, res) => {
   if (handleSessionStream(req, res)) {
+    return;
+  }
+
+  if (await handleSessionApi(req, res)) {
     return;
   }
 
