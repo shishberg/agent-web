@@ -126,6 +126,16 @@ export class PiRunnerCore {
     this.dispose();
   }
 
+  stopRunner(key: string): void {
+    const runner = this.runners.get(key);
+    if (!runner) {
+      return;
+    }
+
+    runner.pi.stop();
+    this.deleteRunnerAliases(runner);
+  }
+
   dispose(): void {
     for (const runner of new Set(this.runners.values())) {
       runner.pi.stop();
