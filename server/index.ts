@@ -5,8 +5,10 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
 import { createServer as createViteServer, type ViteDevServer } from "vite";
 import { isAllowedOrigin } from "./origin";
+import { PiDirectSessionManager } from "./backends/piDirect/piDirectSessionManager";
 import { RunnerClient } from "./runnerClient";
 import type { BrowserClientMessage } from "./runnerProtocol";
+import { createSessionStreamHandler } from "./sessionStream";
 
 export const DEFAULT_PORT = 4177;
 
@@ -19,8 +21,19 @@ let vite: ViteDevServer | null = null;
 let nextClientId = 1;
 const clientIdPrefix = `web-${process.pid}-${Math.random().toString(36).slice(2)}`;
 const runnerClient = new RunnerClient();
+const sessionManager = new PiDirectSessionManager({
+  cwd: root,
+  sessionDir: process.env.PI_CODING_AGENT_SESSION_DIR,
+});
+const handleSessionStream = createSessionStreamHandler({
+  manager: sessionManager,
+});
 
 const server = createServer(async (req, res) => {
+  if (handleSessionStream(req, res)) {
+    return;
+  }
+
   if (!req.url || req.url.startsWith("/rpc")) {
     res.writeHead(404);
     res.end();
