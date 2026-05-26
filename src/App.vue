@@ -6,7 +6,9 @@ import Message from "./components/ai-elements/Message.vue";
 import PromptInput from "./components/ai-elements/PromptInput.vue";
 import Shimmer from "./components/ai-elements/Shimmer.vue";
 import { renderMarkdown } from "./lib/markdown";
-import { RpcClient, type BridgeMessage, type BridgeStatus, type PiSessionSummary } from "./lib/rpcClient";
+import type { PiSessionSummary } from "./lib/rpcClient";
+import { getSessionManager } from "./lib/sessionManagerInstance";
+import type { SessionManager, SessionSummary, StreamEvent, Unsubscribe } from "./lib/sessionApi";
 import {
   acknowledgeExtensionRequest,
   appendLocalUserMessage,
@@ -33,7 +35,7 @@ const draftTitle = ref("New chat");
 const session = reactive<SessionState>(createInitialSessionState());
 const prompt = ref("");
 const queueMode = ref<"steer" | "follow_up">("steer");
-const status = ref<BridgeStatus>("idle");
+const status = ref<string>("idle");
 const stderr = ref<string[]>([]);
 const extensionValue = ref("");
 const sidebarCollapsed = ref(false);
@@ -41,31 +43,15 @@ const showNonMessageResponses = ref(readNonMessageResponsePreference());
 const themePreference = ref<ThemePreference>(readThemePreference());
 const messageScroller = ref<HTMLElement | null>(null);
 const isSessionLoading = ref(false);
+const isSending = ref(false);
 const metadataOpen = ref(false);
 const metadataDialog = ref<HTMLElement | null>(null);
 const sessionDetailsButton = ref<HTMLButtonElement | null>(null);
 const sessionRuntime = reactive<SessionRuntimeMetadata>({ provider: "", model: "" });
 
-const client = new RpcClient({
-  onOpen: () => {
-    status.value = "connected";
-    session.connected = true;
-    session.statusText = "Bridge connected";
-  },
-  onClose: () => {
-    status.value = "exited";
-    isSessionLoading.value = false;
-    session.connected = false;
-    session.running = false;
-    session.statusText = "Connection closed";
-  },
-  onError: (message) => {
-    status.value = "error";
-    isSessionLoading.value = false;
-    session.statusText = message;
-  },
-  onMessage: handleBridgeMessage
-});
+const sessionManager = getSessionManager();
+let listUnsubscribe: Unsubscribe | null = null;
+let currentSessionUnsubscribe: Unsubscribe | null = null;
 
 const activePiSession = computed(() => piSessions.value.find((item) => item.id === activeSessionId.value));
 const activeTitle = computed(() => activePiSession.value?.title ?? draftTitle.value);
@@ -94,7 +80,7 @@ const themeTitle = computed(() => `Theme: ${themePreference.value}`);
 const nonMessageResponseTitle = computed(() =>
   showNonMessageResponses.value ? "Hide thinking and tool calls" : "Show thinking and tool calls"
 );
-const sessionError = computed(() => (session.statusText.startsWith("Pi request failed") ? session.statusText : ""));
+const sessionError = computed(() => (status.value === "error" ? session.statusText : ""));
 const toolActivitySignature = computed(() =>
   session.messages
     .map((message) => message.tools.map((tool) => `${tool.key}:${tool.status}:${tool.content.length}`).join("|"))
@@ -170,33 +156,49 @@ onMounted(() => {
   systemThemeQuery = window.matchMedia("(prefers-color-scheme: dark)");
   systemThemeQuery.addEventListener("change", applyTheme);
   applyTheme();
-  client.command("list_sessions");
+
+  void sessionManager.listSessions().then((sessions) => {
+    piSessions.value = sessions.map(toPiSessionSummary);
+    status.value = "connected";
+    session.connected = true;
+    session.statusText = "Ready";
+  }).catch((error) => {
+    status.value = "error";
+    session.connected = false;
+    session.statusText = `Failed to list sessions: ${error instanceof Error ? error.message : String(error)}`;
+  });
+
+  listUnsubscribe = sessionManager.subscribeToSessionList((sessions) => {
+    piSessions.value = sessions.map(toPiSessionSummary);
+  });
 });
 
 onBeforeUnmount(() => {
   systemThemeQuery?.removeEventListener("change", applyTheme);
-  disconnect();
+  listUnsubscribe?.();
+  currentSessionUnsubscribe?.();
 });
 
-function disconnect() {
-  client.disconnect();
-}
-
 function newChat() {
+  currentSessionUnsubscribe?.();
+  currentSessionUnsubscribe = null;
   isSessionLoading.value = false;
   activeSessionId.value = null;
   draftSessionPath.value = null;
   draftTitle.value = "New chat";
   clearSessionRuntime();
   hydrateSessionMessages(session, []);
-  session.connected = isConnected.value;
-  session.statusText = "Starting new Pi session";
-  client.command("new_session");
+  session.connected = true;
+  session.statusText = "Ready for new chat";
+  status.value = "idle";
 }
 
-function selectChat(id: string) {
+async function selectChat(id: string) {
   const item = piSessions.value.find((candidate) => candidate.id === id);
   if (!item) return;
+
+  currentSessionUnsubscribe?.();
+  currentSessionUnsubscribe = null;
 
   activeSessionId.value = id;
   draftSessionPath.value = null;
@@ -204,9 +206,43 @@ function selectChat(id: string) {
   isSessionLoading.value = true;
   clearSessionRuntime();
   hydrateSessionMessages(session, []);
-  session.connected = isConnected.value;
+  session.connected = true;
   session.statusText = "Opening session";
-  client.command("open_session", { path: item.path });
+
+  const requestedId = id;
+  try {
+    const snapshot = await sessionManager.openSession(requestedId);
+
+    // If the user selected another chat while openSession was in flight, bail.
+    if (activeSessionId.value !== requestedId) return;
+
+    hydrateSessionMessages(session, snapshot.messages);
+    session.connected = true;
+    session.statusText = snapshot.messages.length ? "Session loaded" : "No messages yet";
+    isSessionLoading.value = false;
+    status.value = "connected";
+
+    if (snapshot.state) {
+      applySessionRuntime(snapshot.state);
+      const sessionName = typeof snapshot.state.sessionName === "string" ? snapshot.state.sessionName : "";
+      if (sessionName && !activePiSession.value) {
+        draftTitle.value = sessionName;
+      }
+    }
+
+    // Only install subscription if selection still matches.
+    if (activeSessionId.value === requestedId) {
+      currentSessionUnsubscribe = sessionManager.subscribeToSession(requestedId, (streamEvent) => {
+        handleStreamEvent(streamEvent);
+      });
+    }
+  } catch (error) {
+    // If the user selected another chat, don't show a stale error.
+    if (activeSessionId.value !== requestedId) return;
+    isSessionLoading.value = false;
+    status.value = "error";
+    session.statusText = `Pi request failed: ${error instanceof Error ? error.message : String(error)}`;
+  }
 }
 
 function openMetadata() {
@@ -255,44 +291,58 @@ function cycleTheme() {
   themePreference.value = themes[(currentIndex + 1) % themes.length];
 }
 
-function sendPrompt() {
+async function sendPrompt() {
   const message = prompt.value.trim();
-  if (!message) return;
-  const payload = promptPayload(message);
+  if (!message || isSending.value) return;
 
+  isSending.value = true;
+  prompt.value = "";
   appendLocalUserMessage(session, message);
   if (!activeSessionId.value && draftTitle.value === "New chat") {
     draftTitle.value = titleFromPrompt(message);
   }
 
-  client.command("prompt", payload);
+  try {
+    let sessionId = activeSessionId.value;
+    if (!sessionId) {
+      const draft = await sessionManager.createSession({});
+      sessionId = draft.id;
+      activeSessionId.value = sessionId;
+      currentSessionUnsubscribe?.();
+      currentSessionUnsubscribe = sessionManager.subscribeToSession(sessionId, (streamEvent) => {
+        handleStreamEvent(streamEvent);
+      });
+      status.value = "running";
+      session.statusText = "Starting Pi";
+    }
 
-  prompt.value = "";
+    await sessionManager.sendMessage(sessionId, message, {
+      mode: sessionManagerMode(queueMode.value),
+    });
+  } catch (error) {
+    status.value = "error";
+    session.statusText = error instanceof Error ? error.message : "Failed to send message";
+  } finally {
+    isSending.value = false;
+  }
 }
 
-function promptPayload(message: string): Record<string, unknown> {
-  const sessionPath = activePiSession.value?.path ?? draftSessionPath.value;
-  const payload: Record<string, unknown> = { message, queueMode: queueMode.value };
-  return sessionPath ? { ...payload, sessionPath } : payload;
-}
-
-function respondToExtension(request: ExtensionRequest, accepted: boolean) {
-  const payload = extensionResponsePayload(request, accepted);
-  client.command("extension_ui_response", request.sessionPath ? { ...payload, sessionPath: request.sessionPath } : payload);
+async function respondToExtension(request: ExtensionRequest, accepted: boolean) {
+  const sessionId = activeSessionId.value;
+  if (sessionId) {
+    try {
+      await sessionManager.respondToUserRequest(sessionId, {
+        id: request.id,
+        cancelled: !accepted,
+        confirmed: accepted && request.method === "confirm",
+        value: accepted && request.method !== "confirm" ? extensionValue.value : undefined,
+      });
+    } catch (error) {
+      session.statusText = `Extension response failed: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
   acknowledgeExtensionRequest(session, request.id);
   extensionValue.value = "";
-}
-
-function extensionResponsePayload(request: ExtensionRequest, accepted: boolean): Record<string, unknown> {
-  if (!accepted) {
-    return { id: request.id, cancelled: true };
-  }
-
-  if (request.method === "confirm") {
-    return { id: request.id, confirmed: true };
-  }
-
-  return { id: request.id, value: extensionValue.value };
 }
 
 function stringParam(key: string): string {
@@ -300,128 +350,83 @@ function stringParam(key: string): string {
   return typeof value === "string" ? value : "";
 }
 
-function handleBridgeMessage(message: BridgeMessage) {
-  if (message.source === "bridge") {
-    if (message.type === "error") {
+function sessionManagerMode(mode: "steer" | "follow_up"): "steer" | "followUp" {
+  return mode === "follow_up" ? "followUp" : "steer";
+}
+
+function toPiSessionSummary(s: SessionSummary): PiSessionSummary {
+  const metadata = s.metadata as Record<string, unknown> | undefined;
+  return {
+    id: s.id,
+    path: s.sessionPath ?? "",
+    cwd: typeof metadata?.cwd === "string" ? metadata.cwd : undefined,
+    title: s.title,
+    created: s.createdAt,
+    modified: s.updatedAt,
+    messageCount: typeof metadata?.messageCount === "number" ? metadata.messageCount : undefined,
+    firstMessage: typeof metadata?.firstMessage === "string" ? metadata.firstMessage : undefined,
+  };
+}
+
+function handleStreamEvent(event: StreamEvent): void {
+  switch (event.type) {
+    case "pi.event": {
+      const piEvent = event.payload.event as Record<string, unknown> | undefined;
+      if (piEvent) {
+        prefillEditorPrompt(piEvent);
+        reduceSessionEvent(session, piEvent);
+      }
+      break;
+    }
+    case "pi.response": {
+      const piResponse = event.payload.response as Record<string, unknown> | undefined;
+      if (piResponse) {
+        applyPiResponse(piResponse);
+      }
+      break;
+    }
+    case "pi.status": {
+      const piStatus = (event.payload.status as string) ?? "";
+      const hadError = status.value === "error";
+      status.value = hadError && piStatus === "exited" ? "error" : piStatus === "running" ? "running" : piStatus;
+      session.connected = piStatus !== "exited";
+      session.running = piStatus === "running";
+      session.statusText = hadError && piStatus === "exited" ? session.statusText : piStatus === "exited" ? "Pi exited" : `Pi ${piStatus}`;
+      if (piStatus === "exited") {
+        isSessionLoading.value = false;
+      }
+      break;
+    }
+    case "pi.stderr": {
+      const data = typeof event.payload.data === "string" ? event.payload.data : "";
+      stderr.value.unshift(data);
+      stderr.value = stderr.value.slice(0, 20);
+      break;
+    }
+    case "user_request.created": {
+      const request = event.payload.request as Record<string, unknown> | undefined;
+      if (request) {
+        prefillEditorPrompt(request);
+        reduceSessionEvent(session, request);
+      }
+      break;
+    }
+    case "error": {
+      const message = typeof event.payload.message === "string" ? event.payload.message : "Stream error";
       status.value = "error";
       isSessionLoading.value = false;
-      const errorText = message.message ?? "Bridge error";
-      session.statusText = activePiSession.value ? `Pi request failed: ${errorText}` : errorText;
+      session.statusText = activePiSession.value ? `Pi request failed: ${message}` : message;
+      break;
     }
-    if (message.type === "sessions") {
-      piSessions.value = message.sessions;
-    }
-    if (message.type === "session_cancelled") {
-      isSessionLoading.value = false;
-      session.statusText = message.message;
-    }
-    return;
   }
-
-  if (!isActivePiMessage(message)) {
-    return;
-  }
-  bindDraftSessionPath(message);
-
-  if (message.type === "status") {
-    const hadError = status.value === "error";
-    status.value = hadError && message.status === "exited" ? "error" : message.status === "running" ? "running" : message.status;
-    const connected = message.status !== "exited";
-    const statusText = message.status === "exited" ? "Pi exited" : `Pi ${message.status}`;
-    session.connected = connected;
-    session.running = message.status === "running";
-    session.statusText = hadError && message.status === "exited" ? session.statusText : statusText;
-    return;
-  }
-
-  if (message.type === "event") {
-    const event = piEventWithSessionPath(message.event, message.sessionPath);
-    prefillEditorPrompt(event);
-    reduceSessionEvent(session, event);
-    return;
-  }
-
-  if (message.type === "response") {
-    applyPiResponse(message.response);
-    return;
-  }
-
-  if (message.type === "stderr") {
-    stderr.value.unshift(message.data);
-    stderr.value = stderr.value.slice(0, 20);
-    return;
-  }
-
-  status.value = "error";
-  isSessionLoading.value = false;
-  session.statusText = message.message;
-}
-
-function isActivePiMessage(message: Extract<BridgeMessage, { source: "pi" }>): boolean {
-  const activePath = activePiSession.value?.path;
-  if (activePath) {
-    return message.sessionPath === activePath;
-  }
-
-  const draftPath = draftSessionPath.value;
-  if (message.sessionPath) {
-    return draftPath ? message.sessionPath === draftPath : Boolean(authoritativeDraftSessionPath(message));
-  }
-
-  return true;
-}
-
-function bindDraftSessionPath(message: Extract<BridgeMessage, { source: "pi" }>) {
-  if (activePiSession.value?.path || draftSessionPath.value) {
-    return;
-  }
-
-  const sessionPath = authoritativeDraftSessionPath(message);
-  if (sessionPath) {
-    draftSessionPath.value = sessionPath;
-  }
-}
-
-function piEventWithSessionPath(event: Record<string, unknown>, sessionPath: string | undefined): Record<string, unknown> {
-  return sessionPath ? { ...event, sessionPath } : event;
-}
-
-function sessionPathFromResponse(response: Record<string, unknown>): string {
-  const data = objectField(response.data);
-  const session = objectField(data?.session);
-  return firstString(response.sessionFile, response.sessionPath, data?.sessionFile, data?.sessionPath, session?.sessionFile, session?.sessionPath);
-}
-
-function authoritativeDraftSessionPath(message: Extract<BridgeMessage, { source: "pi" }>): string {
-  if (message.type !== "response" || message.response.success === false) {
-    return "";
-  }
-
-  if (!["get_state", "new_session", "switch_session"].includes(String(message.response.command))) {
-    return "";
-  }
-
-  return sessionPathFromResponse(message.response);
 }
 
 function applyPiResponse(response: Record<string, unknown>) {
-  if (response.command === "get_messages" || response.success === false) {
-    isSessionLoading.value = false;
-  }
-
-  if (response.success !== false && response.command === "get_messages") {
-    const data = typeof response.data === "object" && response.data !== null ? (response.data as Record<string, unknown>) : {};
-    if (Array.isArray(data.messages)) {
-      hydrateSessionMessages(session, data.messages);
-      session.connected = isConnected.value;
-    }
-  }
-
   if (response.success !== false && response.command === "get_state") {
     const data = typeof response.data === "object" && response.data !== null ? (response.data as Record<string, unknown>) : {};
     const sessionId = typeof data.sessionId === "string" ? data.sessionId : "";
     const sessionName = typeof data.sessionName === "string" ? data.sessionName : "";
-    if (sessionId) {
+    if (sessionId && !activeSessionId.value) {
       activeSessionId.value = sessionId;
     }
     if (sessionName && !activePiSession.value) {
