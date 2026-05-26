@@ -1,0 +1,297 @@
+import type {
+	CreateSessionArgs,
+	SendResult,
+	SessionManager,
+	SessionManagerCapabilities,
+	SessionSnapshot,
+	SessionSummary,
+	StreamEvent,
+	StreamEventType,
+	Unsubscribe,
+	UserRequestResponse,
+} from "./sessionApi";
+
+export type RpcSessionManagerOptions = {
+	baseUrl?: string;
+	fetch?: typeof globalThis.fetch;
+	EventSource?: typeof globalThis.EventSource;
+	eventSource?: typeof globalThis.EventSource;
+};
+
+export class RpcSessionManagerError extends Error {
+	constructor(
+		message: string,
+		readonly status: number,
+		readonly body: unknown,
+	) {
+		super(message);
+		this.name = "RpcSessionManagerError";
+	}
+}
+
+const CAPABILITIES: SessionManagerCapabilities = {
+	createSession: true,
+	deleteSession: true,
+	stopSession: true,
+	setSessionMetadata: false,
+	sendMessage: true,
+	respondToUserRequest: true,
+	backgroundSessions: false,
+};
+
+const STREAM_EVENT_TYPES: StreamEventType[] = [
+	"session.created",
+	"session.updated",
+	"session.list.updated",
+	"pi.event",
+	"pi.response",
+	"pi.status",
+	"pi.stderr",
+	"user_request.created",
+	"error",
+];
+
+export function createRpcSessionManager(
+	options: RpcSessionManagerOptions = {},
+): SessionManager {
+	return new RpcSessionManager(options);
+}
+
+export class RpcSessionManager implements SessionManager {
+	readonly capabilities = CAPABILITIES;
+
+	private readonly baseUrl: string;
+	private readonly fetchFn: typeof globalThis.fetch;
+	private readonly EventSourceCtor: typeof globalThis.EventSource;
+
+	constructor(options: RpcSessionManagerOptions = {}) {
+		this.baseUrl = options.baseUrl?.replace(/\/+$/, "") ?? "";
+		this.fetchFn = options.fetch ?? globalThis.fetch;
+		this.EventSourceCtor =
+			options.EventSource ?? options.eventSource ?? globalThis.EventSource;
+
+		if (!this.fetchFn) {
+			throw new Error("fetch is not available in this environment.");
+		}
+		if (!this.EventSourceCtor) {
+			throw new Error("EventSource is not available in this environment.");
+		}
+	}
+
+	async listSessions(query?: {
+		status?: string;
+		kind?: string;
+	}): Promise<SessionSummary[]> {
+		const result = await this.request<{ sessions: SessionSummary[] }>(
+			"/api/sessions",
+			{ method: "GET" },
+			query,
+		);
+		return result.sessions;
+	}
+
+	createSession(args: CreateSessionArgs): Promise<SessionSummary> {
+		return this.request("/api/sessions", {
+			method: "POST",
+			body: JSON.stringify(args),
+			headers: { "content-type": "application/json" },
+		});
+	}
+
+	deleteSession(id: string, opts?: { force?: boolean }): Promise<void> {
+		return this.request(
+			`/api/sessions/${encodeURIComponent(id)}`,
+			{ method: "DELETE" },
+			opts?.force === true ? { force: "true" } : undefined,
+		);
+	}
+
+	openSession(id: string): Promise<SessionSnapshot> {
+		return this.request(`/api/sessions/${encodeURIComponent(id)}`, {
+			method: "GET",
+		});
+	}
+
+	sendMessage(
+		sessionId: string,
+		message: string,
+		opts?: { mode?: "steer" | "followUp" },
+	): Promise<SendResult> {
+		return this.request(
+			`/api/sessions/${encodeURIComponent(sessionId)}/messages`,
+			{
+				method: "POST",
+				body: JSON.stringify({
+					message,
+					...(opts?.mode ? { mode: opts.mode } : {}),
+				}),
+				headers: { "content-type": "application/json" },
+			},
+		);
+	}
+
+	stopSession(sessionId: string): Promise<void> {
+		return this.request(
+			`/api/sessions/${encodeURIComponent(sessionId)}/messages`,
+			{
+				method: "DELETE",
+			},
+		);
+	}
+
+	respondToUserRequest(
+		sessionId: string,
+		response: UserRequestResponse,
+	): Promise<void> {
+		return this.request(
+			`/api/sessions/${encodeURIComponent(sessionId)}/requests/${encodeURIComponent(response.id)}`,
+			{
+				method: "POST",
+				body: JSON.stringify(response),
+				headers: { "content-type": "application/json" },
+			},
+		);
+	}
+
+	subscribeToSession(
+		sessionId: string,
+		onEvent: (event: StreamEvent) => void,
+		opts?: { cursor?: string },
+	): Unsubscribe {
+		// Intentionally ignore opts?.cursor: browser EventSource cannot set
+		// Last-Event-ID on the initial request. The server currently supports the
+		// native header for reconnect replay, not a cursor query parameter.
+
+		const source = new this.EventSourceCtor(
+			this.buildUrl("/api/stream", { session: sessionId }),
+		);
+		for (const type of STREAM_EVENT_TYPES) {
+			source.addEventListener(type, (message) => {
+				const event = parseStreamEvent(type, message);
+				if (event) {
+					onEvent(event);
+				}
+			});
+		}
+
+		return () => source.close();
+	}
+
+	subscribeToSessionList(
+		onUpdate: (sessions: SessionSummary[]) => void,
+	): Unsubscribe {
+		const source = new this.EventSourceCtor(
+			this.buildUrl("/api/stream", { list: "true" }),
+		);
+		// The list subscription only needs list update events; session-scoped
+		// stream events are handled by subscribeToSession.
+		source.addEventListener("session.list.updated", (message) => {
+			const event = parseStreamEvent("session.list.updated", message);
+			const sessions = event?.payload.sessions;
+			if (Array.isArray(sessions)) {
+				onUpdate(sessions as SessionSummary[]);
+			}
+		});
+
+		return () => source.close();
+	}
+
+	private async request<T>(
+		path: string,
+		init: RequestInit,
+		query?: Record<string, string | undefined>,
+	): Promise<T> {
+		const response = await this.fetchFn(this.buildUrl(path, query), init);
+		const body = await readBody(response);
+
+		if (!response.ok) {
+			throw createHttpError(response.status, body);
+		}
+
+		return body as T;
+	}
+
+	private buildUrl(
+		path: string,
+		query?: Record<string, string | undefined>,
+	): string {
+		const params = new URLSearchParams();
+		for (const [key, value] of Object.entries(query ?? {})) {
+			if (value !== undefined) {
+				params.set(key, value);
+			}
+		}
+
+		const queryString = params.toString();
+		return `${this.baseUrl}${path}${queryString ? `?${queryString}` : ""}`;
+	}
+}
+
+async function readBody(response: Response): Promise<unknown> {
+	if (response.status === 204) {
+		return undefined;
+	}
+
+	const contentType = response.headers.get("content-type") ?? "";
+	if (contentType.includes("application/json")) {
+		return response.json();
+	}
+
+	const text = await response.text();
+	return text === "" ? undefined : text;
+}
+
+function createHttpError(
+	status: number,
+	body: unknown,
+): RpcSessionManagerError {
+	if (isRecord(body)) {
+		const message =
+			(typeof body.message === "string" && body.message) ||
+			(typeof body.error === "string" && body.error) ||
+			`HTTP ${status}`;
+		return new RpcSessionManagerError(message, status, body);
+	}
+
+	if (typeof body === "string" && body) {
+		return new RpcSessionManagerError(`HTTP ${status}: ${body}`, status, body);
+	}
+
+	return new RpcSessionManagerError(`HTTP ${status}`, status, body);
+}
+
+function parseStreamEvent(
+	type: StreamEventType,
+	message: MessageEvent,
+): StreamEvent | null {
+	if (typeof message.data !== "string") {
+		return null;
+	}
+
+	let raw: unknown;
+	try {
+		raw = JSON.parse(message.data);
+	} catch {
+		return null;
+	}
+
+	if (!isRecord(raw)) {
+		return null;
+	}
+
+	return {
+		type,
+		sessionId: typeof raw.sessionId === "string" ? raw.sessionId : undefined,
+		eventId:
+			typeof raw.eventId === "string" ? raw.eventId : message.lastEventId,
+		createdAt:
+			typeof raw.createdAt === "string"
+				? raw.createdAt
+				: new Date().toISOString(),
+		payload: isRecord(raw.payload) ? raw.payload : {},
+	};
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
