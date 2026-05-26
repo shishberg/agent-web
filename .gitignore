@@ -1,5 +1,6 @@
 node_modules/
 dist/
+.pi-lens/
 test-results/
 playwright-report/
 blob-report/
