@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "declaration": true,
+    "declarationMap": false,
+    "emitDeclarationOnly": true,
+    "noEmit": false,
+    "outDir": "dist/types",
+    "rootDir": "."
+  },
+  "include": [
+    "src",
+    "server/backends/piDirect/piDirectSessionManager.ts",
+    "server/piSessions.ts",
+    "server/runnerCore.ts"
+  ]
+}

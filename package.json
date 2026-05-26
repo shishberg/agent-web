@@ -1,13 +1,30 @@
 {
-  "name": "pi-agent-web",
+  "name": "@shishberg/agent-web",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
+  "module": "./dist/package/agent-web.js",
+  "types": "./dist/types/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/src/index.d.ts",
+      "import": "./dist/package/agent-web.js"
+    },
+    "./style.css": "./dist/package/style.css",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": [
+    "*.css"
+  ],
   "scripts": {
     "dev": "tsx watch --clear-screen=false --exclude vite.config.ts.timestamp-* server/index.ts",
     "dev:web": "tsx watch --clear-screen=false --exclude vite.config.ts.timestamp-* server/index.ts",
     "dev:runner": "tsx watch --clear-screen=false --exclude vite.config.ts.timestamp-* server/runnerService.ts",
-    "build": "vue-tsc --noEmit && vite build",
+    "build": "vue-tsc --noEmit && vite build && vite build --config vite.lib.config.ts && vue-tsc -p tsconfig.package.json",
     "preview": "tsx server/index.ts --production",
     "test": "vitest run",
     "test:e2e": "playwright test",
