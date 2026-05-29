@@ -66,13 +66,14 @@ export class RpcSessionManager implements SessionManager {
 
 	constructor(options: RpcSessionManagerOptions = {}) {
 		this.baseUrl = options.baseUrl?.replace(/\/+$/, "") ?? "";
-		this.fetchFn = options.fetch ?? globalThis.fetch;
+		const fetchFn = options.fetch ?? globalThis.fetch?.bind(globalThis);
 		this.EventSourceCtor =
 			options.EventSource ?? options.eventSource ?? globalThis.EventSource;
 
-		if (!this.fetchFn) {
+		if (!fetchFn) {
 			throw new Error("fetch is not available in this environment.");
 		}
+		this.fetchFn = fetchFn;
 		if (!this.EventSourceCtor) {
 			throw new Error("EventSource is not available in this environment.");
 		}

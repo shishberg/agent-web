@@ -155,6 +155,27 @@ describe("RpcSessionManager", () => {
 		});
 	});
 
+	it("calls fetch with globalThis as this receiver", async () => {
+		let fetchThis: unknown = null;
+		globalThis.fetch = vi.fn(async function (
+			this: unknown,
+			input: RequestInfo | URL,
+			init?: RequestInit,
+		) {
+			fetchThis = this;
+			fetchCalls.push({ url: String(input), init });
+			const response = fetchQueue.shift();
+			if (!response) throw new Error("Unexpected fetch call");
+			return response;
+		}) as typeof fetch;
+
+		queueJson({ id: "s2", title: "Test", status: "idle" });
+		const manager = createRpcSessionManager();
+		await manager.openSession("s2");
+
+		expect(fetchThis).toBe(globalThis);
+	});
+
 	it("throws useful errors from JSON error responses", async () => {
 		queueJson({ error: "not_found", message: "Session not found" }, 404);
 		const manager = createRpcSessionManager();
