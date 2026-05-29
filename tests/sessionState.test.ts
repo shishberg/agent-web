@@ -61,7 +61,31 @@ describe("session state reducer", () => {
     ]);
   });
 
-  it("ignores lifecycle message events that do not include message.id", () => {
+  it("uses message timestamp as a fallback id for Verandah-streamed assistant events", () => {
+    const state = createInitialSessionState();
+
+    reduceSessionEvent(state, { type: "message_start", message: { role: "assistant", timestamp: 1234 } });
+    reduceSessionEvent(state, {
+      type: "message_update",
+      message: { role: "assistant", timestamp: 1234, responseId: "response-1" },
+      assistantMessageEvent: { type: "text_delta", delta: "Hello" }
+    });
+    reduceSessionEvent(state, {
+      type: "message_update",
+      message: { role: "assistant", timestamp: 1234, responseId: "response-1" },
+      assistantMessageEvent: { type: "text_delta", delta: " there" }
+    });
+    reduceSessionEvent(state, {
+      type: "message_end",
+      message: { role: "assistant", timestamp: 1234, responseId: "response-1" }
+    });
+
+    expect(state.messages).toEqual([
+      expect.objectContaining({ id: "1234", role: "assistant", content: "Hello there", status: "done" })
+    ]);
+  });
+
+  it("ignores lifecycle message events that do not include a nested message identity", () => {
     const state = createInitialSessionState();
 
     reduceSessionEvent(state, { type: "message_start", id: "top-level-1", role: "assistant" });

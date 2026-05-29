@@ -829,7 +829,7 @@ function isFireAndForgetExtensionMethod(method: string): boolean {
 
 function messageId(event: PiEvent): string {
   const message = objectField(event.message);
-  return stringField(message?.id);
+  return stringField(message?.id) || numberField(message?.timestamp) || stringField(message?.responseId);
 }
 
 function executionToolId(event: PiEvent): string {
