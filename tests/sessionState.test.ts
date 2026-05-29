@@ -774,6 +774,44 @@ describe("session state reducer", () => {
     expect(state.activeMessageId).toBeNull();
   });
 
+  it("hydrates messages from Pi session-file records and skips metadata records", () => {
+    const state = createInitialSessionState();
+
+    hydrateSessionMessages(state, [
+      { type: "session", id: "session-1", cwd: "/tmp/project" },
+      { type: "model_change", id: "model-1", modelId: "gpt-5.5" },
+      {
+        type: "message",
+        id: "record-user-1",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "Hello" }]
+        }
+      },
+      {
+        type: "message",
+        id: "record-assistant-1",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "Hi there" }]
+        }
+      }
+    ]);
+
+    expect(state.messages).toEqual([
+      expect.objectContaining({
+        id: "record-user-1",
+        role: "user",
+        content: "Hello"
+      }),
+      expect.objectContaining({
+        id: "record-assistant-1",
+        role: "assistant",
+        content: "Hi there"
+      })
+    ]);
+  });
+
   it("does not merge hydrated tool results by a generic id field", () => {
     const state = createInitialSessionState();
 

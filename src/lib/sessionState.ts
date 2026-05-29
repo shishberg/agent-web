@@ -262,9 +262,20 @@ export function appendLocalUserMessage(state: SessionState, content: string): Se
 }
 
 function hydrateSessionMessageIntoState(state: SessionState, value: unknown, index: number): void {
-  const message = objectField(value);
+  const raw = objectField(value);
+  if (!raw) {
+    return;
+  }
+
+  const recordType = stringField(raw.type);
+  const wrappedMessage = objectField(raw.message);
+  if (recordType && recordType !== "message" && !wrappedMessage) {
+    return;
+  }
+
+  const message = wrappedMessage ?? raw;
   const role = roleFromHydratedMessage(message);
-  const extracted = extractHydratedContent(message?.content);
+  const extracted = extractHydratedContent(message.content);
   if (isHydratedToolResult(message)) {
     const toolResult = message as Record<string, unknown>;
     const key = hydratedToolResultKey(toolResult);
@@ -278,7 +289,11 @@ function hydrateSessionMessageIntoState(state: SessionState, value: unknown, ind
   }
 
   state.messages.push({
-    id: stringField(message?.id) || numberField(message?.timestamp) || `pi-message-${index + 1}`,
+    id:
+      firstString(message.id, raw.id, message.responseId, raw.responseId) ||
+      numberField(message.timestamp) ||
+      numberField(raw.timestamp) ||
+      `pi-message-${index + 1}`,
     role,
     content: extracted.content,
     thinking: extracted.thinking,
