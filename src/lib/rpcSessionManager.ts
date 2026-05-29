@@ -159,12 +159,8 @@ export class RpcSessionManager implements SessionManager {
 		onEvent: (event: StreamEvent) => void,
 		opts?: { cursor?: string },
 	): Unsubscribe {
-		// Intentionally ignore opts?.cursor: browser EventSource cannot set
-		// Last-Event-ID on the initial request. The server currently supports the
-		// native header for reconnect replay, not a cursor query parameter.
-
 		const source = new this.EventSourceCtor(
-			this.buildUrl("/api/stream", { session: sessionId }),
+			this.buildUrl("/api/stream", { session: sessionId, cursor: opts?.cursor }),
 		);
 		for (const type of STREAM_EVENT_TYPES) {
 			source.addEventListener(type, (message) => {

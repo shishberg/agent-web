@@ -232,9 +232,13 @@ async function selectChat(id: string) {
 
     // Only install subscription if selection still matches.
     if (activeSessionId.value === requestedId) {
-      currentSessionUnsubscribe = sessionManager.subscribeToSession(requestedId, (streamEvent) => {
-        handleStreamEvent(streamEvent);
-      });
+      currentSessionUnsubscribe = sessionManager.subscribeToSession(
+        requestedId,
+        (streamEvent) => {
+          handleStreamEvent(streamEvent);
+        },
+        { cursor: snapshot.streamCursor }
+      );
     }
   } catch (error) {
     // If the user selected another chat, don't show a stale error.

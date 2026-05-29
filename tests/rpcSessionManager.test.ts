@@ -213,7 +213,7 @@ describe("RpcSessionManager", () => {
 			{ cursor: "evt-1" },
 		);
 
-		expect(eventSources[0].url).toBe("/api/stream?session=session%2F1");
+		expect(eventSources[0].url).toBe("/api/stream?session=session%2F1&cursor=evt-1");
 		eventSources[0].dispatch("pi.event", {
 			sessionId: "session/1",
 			eventId: "evt-2",
