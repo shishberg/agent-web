@@ -374,11 +374,20 @@ function toPiSessionSummary(s: SessionSummary): PiSessionSummary {
 
 function handleStreamEvent(event: StreamEvent): void {
   switch (event.type) {
+    case "session.updated": {
+      const summary = objectField(event.payload.session);
+      const nextStatus = typeof summary?.status === "string" ? summary.status : "";
+      applyBackendSessionStatus(nextStatus);
+      break;
+    }
     case "pi.event": {
       const piEvent = event.payload.event as Record<string, unknown> | undefined;
       if (piEvent) {
         prefillEditorPrompt(piEvent);
         reduceSessionEvent(session, piEvent);
+        if (piEvent.type === "agent_end") {
+          applyBackendSessionStatus("idle");
+        }
       }
       break;
     }
@@ -422,6 +431,37 @@ function handleStreamEvent(event: StreamEvent): void {
       session.statusText = activePiSession.value ? `Pi request failed: ${message}` : message;
       break;
     }
+  }
+}
+
+function applyBackendSessionStatus(nextStatus: string): void {
+  if (nextStatus === "running") {
+    status.value = "running";
+    session.connected = true;
+    session.running = true;
+    session.statusText = "Pi running";
+    return;
+  }
+
+  if (nextStatus === "failed") {
+    status.value = "error";
+    session.connected = false;
+    session.running = false;
+    return;
+  }
+
+  if (nextStatus === "stopped") {
+    status.value = "stopped";
+    session.connected = false;
+    session.running = false;
+    session.statusText = "Pi stopped";
+    return;
+  }
+
+  if (nextStatus === "idle" || nextStatus === "blocked") {
+    status.value = "connected";
+    session.connected = true;
+    session.running = false;
   }
 }
 
