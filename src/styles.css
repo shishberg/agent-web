@@ -19,7 +19,19 @@
 
 body {
   margin: 0;
+}
+
+/* Prevent page-level scrolling in standalone mode.
+ * Embedded hosts (data-embedded) rely on their own layout scrolling.
+ * The @supports guard keeps the old standalone behavior on browsers
+ * that don't understand :has(). */
+body {
   overflow: hidden;
+}
+@supports selector(:has(*)) {
+  html:has([data-embedded]) body {
+    overflow: auto;
+  }
 }
 
 button,
@@ -75,6 +87,37 @@ pre {
   overflow: hidden;
   background: #f8fafc;
   transition: grid-template-columns 0.24s ease;
+}
+
+/*
+ * Embedded mode: add data-embedded to the #app container when agent-web
+ * is mounted inside a host layout (e.g. Verandah).  The app fills its
+ * container instead of the viewport, and overlays use position: absolute
+ * so they stay within the host's grid region.
+ */
+[data-embedded] {
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+[data-embedded] .app-shell {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+[data-embedded] .modal-backdrop {
+  position: absolute;
+}
+
+@media (max-width: 720px) {
+  [data-embedded] .sidebar {
+    position: absolute;
+  }
 }
 
 .app-shell.sidebar-collapsed {

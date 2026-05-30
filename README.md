@@ -42,6 +42,20 @@ npm run preview
 
 `npm run dev` and `npm run dev:web` both start the web service.
 
+## Embedded mode
+
+When agent-web is mounted inside a host product layout (e.g. Verandah), add the `data-embedded` attribute to the container element:
+
+```html
+<div id="app" data-embedded></div>
+```
+
+This tells the CSS to fill the host container instead of claiming `100vw`/`100vh`, and keeps overlays (modals, mobile sidebar) within the embedded region via `position: absolute`.
+
+The host is responsible for giving `#app` a defined size (e.g. via grid or flex layout). The `[data-embedded]` container itself gets `width: 100%; height: 100%; max-width: 100%; max-height: 100%; min-width: 0; min-height: 0` so it cooperates with grid/flex constraints.
+
+Requires `:has()` selector support (Chrome 105+, Safari 15.4+, Firefox 121+).
+
 ## Notes
 
 - Browser `/rpc` command messages stay shaped as `{ type: "command", command, payload }`; the browser can also send `{ type: "disconnect" }`. The web-to-runner protocol adds local routing metadata and a versioned handshake.
