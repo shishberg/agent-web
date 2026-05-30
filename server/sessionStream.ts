@@ -163,17 +163,51 @@ export function createSessionStreamHandler(
 			return [];
 		}
 
+		// Exact match covers native SSE reconnects (Last-Event-ID) and the
+		// common case where the cursor event is still buffered.
 		const cursorIndex = replayBuffer.findIndex(
 			(event) => event.eventId === lastEventId,
 		);
-		if (cursorIndex === -1) {
-			return [];
+		if (cursorIndex !== -1) {
+			return replayBuffer
+				.slice(cursorIndex + 1)
+				.filter((event) => eventMatchesRequest(event, request));
 		}
 
-		return replayBuffer
-			.slice(cursorIndex + 1)
-			.filter((event) => eventMatchesRequest(event, request));
+		// Fallback: if the exact cursor has been evicted from the buffer but
+		// newer events remain (possible when a snapshot cursor points to an
+		// older event the buffer no longer holds), replay every buffered event
+		// whose numeric id is after the cursor.  Only recognised formats
+		// (evt-{N}, sse-{N}) use numeric comparison; unrecognised cursors
+		// produce no replay so the subscription only receives future events.
+		const cursorValue = parseNumericEventId(lastEventId);
+		if (cursorValue >= 0) {
+			return replayBuffer
+				.filter(
+					(event) =>
+						parseNumericEventId(event.eventId) > cursorValue &&
+						eventMatchesRequest(event, request),
+				)
+				.slice();
+		}
+
+		return [];
 	}
+}
+
+/**
+ * Extract the trailing numeric id from event-id formats {@code evt-{N}}
+ * and {@code sse-{N}}, returning -1 for unrecognised formats.
+ */
+export function parseNumericEventId(eventId: string | undefined): number {
+	if (!eventId) {
+		return -1;
+	}
+	const match = eventId.match(/^(?:evt|sse)-(\d+)$/);
+	if (!match) {
+		return -1;
+	}
+	return parseInt(match[1], 10);
 }
 
 function parseStreamRequest(
@@ -187,12 +221,23 @@ function parseStreamRequest(
 		return null;
 	}
 
+	// Browsers cannot set Last-Event-ID on the initial EventSource request,
+	// so the RPC client encodes the cursor as a query parameter instead.
+	// Prefer the standard header when present (native reconnect).
+	const cursorParam = nonEmpty(url.searchParams.get("cursor"));
+	let lastEventId: string | undefined;
+	if (Array.isArray(lastEventHeader)) {
+		lastEventId = lastEventHeader[0];
+	} else if (lastEventHeader) {
+		lastEventId = lastEventHeader;
+	} else {
+		lastEventId = cursorParam;
+	}
+
 	return {
 		sessionId,
 		includeList,
-		lastEventId: Array.isArray(lastEventHeader)
-			? lastEventHeader[0]
-			: lastEventHeader,
+		lastEventId,
 	};
 }
 

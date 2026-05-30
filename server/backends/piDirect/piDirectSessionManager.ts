@@ -84,7 +84,7 @@ export class PiDirectSessionManager implements SessionManager {
 
 	private readonly sessionSubscribers = new Map<
 		string,
-		Set<(event: StreamEvent) => void>
+		Map<(event: StreamEvent) => void, string>
 	>();
 	private readonly listSubscribers = new Set<
 		(sessions: SessionSummary[]) => void
@@ -254,10 +254,10 @@ export class PiDirectSessionManager implements SessionManager {
 	subscribeToSession(
 		sessionId: string,
 		onEvent: (event: StreamEvent) => void,
-		_opts?: { cursor?: string },
+		opts?: { cursor?: string },
 	): Unsubscribe {
-		const subscribers = this.sessionSubscribers.get(sessionId) ?? new Set();
-		subscribers.add(onEvent);
+		const subscribers = this.sessionSubscribers.get(sessionId) ?? new Map();
+		subscribers.set(onEvent, opts?.cursor ?? "");
 		this.sessionSubscribers.set(sessionId, subscribers);
 
 		return () => {
@@ -266,6 +266,17 @@ export class PiDirectSessionManager implements SessionManager {
 				this.sessionSubscribers.delete(sessionId);
 			}
 		};
+	}
+
+	async openAndSubscribeSession(
+		id: string,
+		onEvent: (event: StreamEvent) => void,
+	): Promise<{ snapshot: SessionSnapshot; unsubscribe: Unsubscribe }> {
+		const snapshot = await this.openSession(id);
+		const unsubscribe = this.subscribeToSession(id, onEvent, {
+			cursor: snapshot.streamCursor,
+		});
+		return { snapshot, unsubscribe };
 	}
 
 	subscribeToSessionList(
@@ -593,7 +604,11 @@ export class PiDirectSessionManager implements SessionManager {
 
 		const subscribers = this.sessionSubscribers.get(sessionId);
 		if (subscribers) {
-			for (const onEvent of subscribers) {
+			const eventId = streamEvent.eventId;
+			for (const [onEvent, cursor] of subscribers) {
+				if (!isAfterCursor(eventId, cursor)) {
+					continue;
+				}
 				try {
 					onEvent(streamEvent);
 				} catch {
@@ -901,4 +916,35 @@ export class PiDirectSessionManager implements SessionManager {
 	private isRecord(value: unknown): value is Record<string, unknown> {
 		return typeof value === "object" && value !== null && !Array.isArray(value);
 	}
+}
+
+/**
+ * Returns true when `eventId` is after `cursor`.  Cursors from
+ * {@link SessionSnapshot.streamCursor} use the {@code evt-{N}} format;
+ * unrecognised formats are treated as "no cursor" (accept everything).
+ */
+function isAfterCursor(eventId: string, cursor: string): boolean {
+	if (!cursor) {
+		return true;
+	}
+
+	const cursorNum = cursorValue(cursor);
+	if (cursorNum < 0) {
+		return true;
+	}
+
+	const eventNum = cursorValue(eventId);
+	if (eventNum < 0) {
+		return true;
+	}
+
+	return eventNum > cursorNum;
+}
+
+function cursorValue(cursor: string): number {
+	const match = cursor.match(/^evt-(\d+)$/);
+	if (!match) {
+		return -1;
+	}
+	return parseInt(match[1], 10);
 }

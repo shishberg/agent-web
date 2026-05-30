@@ -52,6 +52,16 @@ export type SessionSnapshot = {
 	 */
 	messages: unknown[];
 	state?: Record<string, unknown>;
+	/**
+	 * Opaque stream position recorded after the last event included in this
+	 * snapshot.  Pass this value as the `cursor` option to
+	 * {@link SessionManager.subscribeToSession} so the live stream resumes
+	 * after the hydrated transcript instead of replaying events that are
+	 * already represented in `messages`.
+	 *
+	 * An empty string means the snapshot has no stream position (e.g. the
+	 * session has never produced live events).
+	 */
 	streamCursor: string;
 	metadata?: Record<string, unknown>;
 };
@@ -110,6 +120,16 @@ export type SessionManager = {
 		response: UserRequestResponse,
 	): Promise<void>;
 
+	/**
+	 * Subscribe to live stream events for a session.
+	 *
+	 * @param opts.cursor - Opaque stream position.  Events with an id
+	 *   at or before this cursor are suppressed so the stream only
+	 *   delivers events that happened after the snapshot returned by
+	 *   {@link openSession}.  Set this to
+	 *   {@link SessionSnapshot.streamCursor} to avoid duplicate events
+	 *   after hydrating a snapshot.
+	 */
 	subscribeToSession(
 		sessionId: string,
 		onEvent: (event: StreamEvent) => void,
@@ -118,4 +138,17 @@ export type SessionManager = {
 	subscribeToSessionList(
 		onUpdate: (sessions: SessionSummary[]) => void,
 	): Unsubscribe;
+
+	/**
+	 * Open a session snapshot and subscribe to its live event stream in a
+	 * single operation.  Equivalent to calling {@link openSession} followed
+	 * by {@link subscribeToSession} with the snapshot's
+	 * {@link SessionSnapshot.streamCursor}, but guarantees the cursor
+	 * handoff is never missed so the stream never replays events already
+	 * represented in the snapshot.
+	 */
+	openAndSubscribeSession(
+		id: string,
+		onEvent: (event: StreamEvent) => void,
+	): Promise<{ snapshot: SessionSnapshot; unsubscribe: Unsubscribe }>;
 };

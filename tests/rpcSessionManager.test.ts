@@ -239,6 +239,42 @@ describe("RpcSessionManager", () => {
 		expect(eventSources[0].close).toHaveBeenCalledTimes(1);
 	});
 
+	it("openAndSubscribeSession returns snapshot and wired subscription with cursor", async () => {
+		queueJson({
+			session: { id: "session/1", title: "Open", status: "running" },
+			messages: [{ role: "user", content: "hi" }],
+			streamCursor: "evt-5",
+		});
+
+		const manager = createRpcSessionManager();
+		const events: StreamEvent[] = [];
+
+		const { snapshot, unsubscribe } = await manager.openAndSubscribeSession(
+			"session/1",
+			(event) => events.push(event),
+		);
+
+		expect(snapshot.session.id).toBe("session/1");
+		expect(snapshot.messages).toEqual([{ role: "user", content: "hi" }]);
+		expect(snapshot.streamCursor).toBe("evt-5");
+
+		// The EventSource URL includes the cursor from the snapshot.
+		expect(eventSources[0].url).toBe(
+			"/api/stream?session=session%2F1&cursor=evt-5",
+		);
+
+		eventSources[0].dispatch("pi.event", {
+			sessionId: "session/1",
+			eventId: "evt-6",
+			createdAt: "2026-05-26T00:00:00.000Z",
+			payload: { event: { type: "turn_start" } },
+		});
+
+		expect(events).toHaveLength(1);
+		unsubscribe();
+		expect(eventSources[0].close).toHaveBeenCalledTimes(1);
+	});
+
 	it("accepts an explicit transport option", async () => {
 		const transport: BrowserTransport = {
 			fetch: vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

@@ -211,12 +211,36 @@ async function selectChat(id: string) {
 
   const requestedId = id;
   try {
-    const snapshot = await sessionManager.openSession(requestedId);
+    // Buffer live events until the snapshot is applied so a live event
+    // that arrives before hydrateSessionMessages() can't be overwritten.
+    const pending: StreamEvent[] = [];
+    let hydrated = false;
 
-    // If the user selected another chat while openSession was in flight, bail.
-    if (activeSessionId.value !== requestedId) return;
+    const { snapshot, unsubscribe } = await sessionManager.openAndSubscribeSession(
+      requestedId,
+      (streamEvent) => {
+        if (!hydrated) {
+          pending.push(streamEvent);
+        } else {
+          handleStreamEvent(streamEvent);
+        }
+      },
+    );
+
+    // If the user selected another chat while we were opening, bail.
+    if (activeSessionId.value !== requestedId) {
+      unsubscribe();
+      return;
+    }
+
+    currentSessionUnsubscribe = unsubscribe;
 
     hydrateSessionMessages(session, snapshot.messages);
+    hydrated = true;
+    for (const event of pending) {
+      handleStreamEvent(event);
+    }
+
     session.connected = true;
     session.statusText = snapshot.messages.length ? "Session loaded" : "No messages yet";
     isSessionLoading.value = false;
@@ -228,17 +252,6 @@ async function selectChat(id: string) {
       if (sessionName && !activePiSession.value) {
         draftTitle.value = sessionName;
       }
-    }
-
-    // Only install subscription if selection still matches.
-    if (activeSessionId.value === requestedId) {
-      currentSessionUnsubscribe = sessionManager.subscribeToSession(
-        requestedId,
-        (streamEvent) => {
-          handleStreamEvent(streamEvent);
-        },
-        { cursor: snapshot.streamCursor }
-      );
     }
   } catch (error) {
     // If the user selected another chat, don't show a stale error.

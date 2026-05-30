@@ -614,6 +614,128 @@ describe("PiDirectSessionManager", () => {
 			});
 		});
 
+		it("suppresses events at or before the cursor when a cursor is provided", async () => {
+			const resultPromise = manager.createSession({ prompt: "cursor test" });
+
+			process.emit("pi-event", {
+				type: "response",
+				response: {
+					id: "session-1-new",
+					command: "new_session",
+					success: true,
+					data: { sessionFile: "/tmp/pi/cursor.jsonl" },
+				},
+			});
+
+			process.emit("pi-event", {
+				type: "response",
+				response: {
+					id: "hydrate-1-state",
+					command: "get_state",
+					success: true,
+					data: {
+						sessionId: "cursor-id",
+						sessionFile: "/tmp/pi/cursor.jsonl",
+						cwd: "/repo",
+						sessionName: "cursor test",
+					},
+				},
+			});
+
+			const summary = await resultPromise;
+
+			// Emit a few events so the session has a streamCursor.
+			const preEvents: unknown[] = [];
+			manager.subscribeToSession(summary.id, (event) => preEvents.push(event));
+
+			process.emit("pi-event", {
+				type: "event",
+				event: { type: "message_start", role: "assistant" },
+			});
+			process.emit("pi-event", {
+				type: "event",
+				event: { type: "message_start", role: "assistant" },
+			});
+
+			expect(preEvents).toHaveLength(2);
+			const cursor = (preEvents[1] as Record<string, unknown>).eventId as string;
+			expect(cursor).toMatch(/^evt-/);
+
+			// Subscribe with the cursor — events at or before it are skipped.
+			const postEvents: unknown[] = [];
+			manager.subscribeToSession(
+				summary.id,
+				(event) => postEvents.push(event),
+				{ cursor },
+			);
+
+			process.emit("pi-event", {
+				type: "event",
+				event: { type: "message_start", role: "assistant" },
+			});
+
+			expect(postEvents).toHaveLength(1);
+			expect((postEvents[0] as Record<string, unknown>).type).toBe("pi.event");
+
+			// Negative: a subscriber with a far-future cursor receives nothing.
+			const farFutureEvents: unknown[] = [];
+			manager.subscribeToSession(
+				summary.id,
+				(event) => farFutureEvents.push(event),
+				{ cursor: "evt-999" },
+			);
+
+			process.emit("pi-event", {
+				type: "event",
+				event: { type: "message_start", role: "assistant" },
+			});
+
+			expect(farFutureEvents).toHaveLength(0);
+		});
+
+		it("delivers all events when cursor is empty", async () => {
+			const resultPromise = manager.createSession({ prompt: "empty cursor test" });
+
+			process.emit("pi-event", {
+				type: "response",
+				response: {
+					id: "session-1-new",
+					command: "new_session",
+					success: true,
+					data: { sessionFile: "/tmp/pi/empty.jsonl" },
+				},
+			});
+
+			process.emit("pi-event", {
+				type: "response",
+				response: {
+					id: "hydrate-1-state",
+					command: "get_state",
+					success: true,
+					data: {
+						sessionId: "empty-id",
+						sessionFile: "/tmp/pi/empty.jsonl",
+						cwd: "/repo",
+						sessionName: "empty cursor test",
+					},
+				},
+			});
+
+			const summary = await resultPromise;
+
+			const events: unknown[] = [];
+			manager.subscribeToSession(summary.id, (event) => events.push(event), {
+				cursor: "",
+			});
+
+			process.emit("pi-event", {
+				type: "event",
+				event: { type: "message_start", role: "assistant" },
+			});
+
+			expect(events).toHaveLength(1);
+		});
+
 		it("returns an unsubscribe function that removes the listener", async () => {
 			const resultPromise = manager.createSession({ prompt: "unsub test" });
 
@@ -657,6 +779,98 @@ describe("PiDirectSessionManager", () => {
 			});
 
 			expect(events).toEqual([]);
+		});
+	});
+
+	describe("openAndSubscribeSession", () => {
+		it("returns snapshot and a wired subscription", async () => {
+			listSessions.mockResolvedValue([
+				mockPiSession("open-sub-id", "/tmp/pi/open-sub.jsonl", "OpenSub"),
+			]);
+
+			await manager.listSessions();
+
+			const { snapshot, unsubscribe } = await manager.openAndSubscribeSession(
+				"open-sub-id",
+				() => {},
+			);
+
+			expect(snapshot.session.id).toBe("open-sub-id");
+			expect(snapshot.messages).toEqual([
+				{ role: "user", content: "hello from /tmp/pi/open-sub.jsonl" },
+			]);
+			expect(snapshot.streamCursor).toBe("");
+
+			// Unsubscribe is a working function.
+			expect(typeof unsubscribe).toBe("function");
+			unsubscribe();
+		});
+
+		it("wires the snapshot streamCursor into the subscription", async () => {
+			// Create a session that has emitted events so the cursor is non-empty.
+			const resultPromise = manager.createSession({
+				prompt: "cursor handoff test",
+			});
+
+			process.emit("pi-event", {
+				type: "response",
+				response: {
+					id: "session-1-new",
+					command: "new_session",
+					success: true,
+					data: { sessionFile: "/tmp/pi/handoff.jsonl" },
+				},
+			});
+
+			process.emit("pi-event", {
+				type: "response",
+				response: {
+					id: "hydrate-1-state",
+					command: "get_state",
+					success: true,
+					data: {
+						sessionId: "handoff-id",
+						sessionFile: "/tmp/pi/handoff.jsonl",
+						cwd: "/repo",
+						sessionName: "handoff test",
+					},
+				},
+			});
+
+			const summary = await resultPromise;
+
+			// Emit events to advance the cursor.
+			const preEvents: unknown[] = [];
+			manager.subscribeToSession(summary.id, (event) => preEvents.push(event));
+			process.emit("pi-event", {
+				type: "event",
+				event: { type: "turn_start" },
+			});
+			process.emit("pi-event", {
+				type: "event",
+				event: { type: "turn_end" },
+			});
+
+			expect(preEvents).toHaveLength(2);
+			const expectedCursor = (preEvents[1] as Record<string, unknown>).eventId as string;
+
+			// openAndSubscribeSession should use the session's streamCursor.
+			const postEvents: unknown[] = [];
+			const { snapshot, unsubscribe } = await manager.openAndSubscribeSession(
+				summary.id,
+				(event) => postEvents.push(event),
+			);
+
+			expect(snapshot.streamCursor).toBe(expectedCursor);
+
+			// Events after opening should be delivered.
+			process.emit("pi-event", {
+				type: "event",
+				event: { type: "message_start", role: "assistant" },
+			});
+
+			expect(postEvents).toHaveLength(1);
+			unsubscribe();
 		});
 	});
 

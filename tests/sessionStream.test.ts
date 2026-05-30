@@ -1,7 +1,7 @@
-import { createServer, type Server } from "node:http";
+import { createServer, get, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createSessionStreamHandler } from "../server/sessionStream";
+import { createSessionStreamHandler, parseNumericEventId } from "../server/sessionStream";
 import type {
 	SessionManager,
 	SessionSummary,
@@ -116,6 +116,28 @@ describe("session SSE stream", () => {
 		await reader.cancel();
 	});
 
+	it("replays from cursor query param when Last-Event-ID header is absent", async () => {
+		const manager = mockSessionManager();
+		const { url } = await startStreamServer(manager);
+		const first = await fetch(`${url}/api/stream?session=s1`);
+		const firstReader = first.body!.getReader();
+
+		manager.sessionCallbacks.get("s1")?.(streamEvent("evt-1", "one"));
+		await readUntil(firstReader, "id: evt-1");
+		manager.sessionCallbacks.get("s1")?.(streamEvent("evt-2", "two"));
+		await readUntil(firstReader, "id: evt-2");
+		await firstReader.cancel();
+
+		// Use cursor query param instead of Last-Event-ID header.
+		const replayed = await fetch(`${url}/api/stream?session=s1&cursor=evt-1`);
+		const replayReader = replayed.body!.getReader();
+
+		const replayChunk = await readUntil(replayReader, "\n\n");
+		expect(replayChunk).toContain("event: pi.event\nid: evt-2\n");
+		expect(replayChunk).toContain('"message":"two"');
+		await replayReader.cancel();
+	});
+
 	it("replays buffered events newer than Last-Event-ID before live events", async () => {
 		const manager = mockSessionManager();
 		const { url } = await startStreamServer(manager);
@@ -137,6 +159,31 @@ describe("session SSE stream", () => {
 		expect(replayChunk).toContain("event: pi.event\nid: evt-2\n");
 		expect(replayChunk).toContain('"message":"two"');
 		await replayReader.cancel();
+	});
+
+	it("replays buffered events newer than cursor even when cursor event was never in buffer", async () => {
+		const manager = mockSessionManager();
+		const { url, port } = await startStreamServer(manager);
+
+		// Push evt-5 and evt-6 into the replay buffer, then close.
+		const first = await fetch(`${url}/api/stream?session=s1`);
+		const firstReader = first.body!.getReader();
+		manager.sessionCallbacks.get("s1")?.(streamEvent("evt-5", "five"));
+		await readUntil(firstReader, "id: evt-5");
+		manager.sessionCallbacks.get("s1")?.(streamEvent("evt-6", "six"));
+		await readUntil(firstReader, "id: evt-6");
+		await firstReader.cancel();
+
+		// Delay to let server clean up the first connection.
+		await new Promise((r) => setTimeout(r, 500));
+
+		// Reconnect with cursor=evt-4 (never in buffer). Numeric
+		// fallback should replay evt-5 and evt-6 since both > 4.
+		const { replyBody: after4 } = await sseGet(port, "s1", "evt-4");
+		expect(after4).toContain("event: pi.event\nid: evt-5\n");
+		expect(after4).toContain('"message":"five"');
+		expect(after4).toContain("event: pi.event\nid: evt-6\n");
+		expect(after4).toContain('"message":"six"');
 	});
 
 	it("unsubscribes when the client closes", async () => {
@@ -165,7 +212,7 @@ describe("session SSE stream", () => {
 	async function startStreamServer(
 		manager: MockSessionManager,
 		options: { heartbeatMs?: number } = {},
-	): Promise<{ url: string; server: Server }> {
+	): Promise<{ url: string; port: number; server: Server }> {
 		const handleStream = createSessionStreamHandler({ manager, ...options });
 		const server = createServer((req, res) => {
 			if (handleStream(req, res)) {
@@ -179,8 +226,66 @@ describe("session SSE stream", () => {
 			server.listen(0, "127.0.0.1", resolve),
 		);
 		const address = server.address() as AddressInfo;
-		return { url: `http://127.0.0.1:${address.port}`, server };
+		return { url: `http://127.0.0.1:${address.port}`, port: address.port, server };
 	}
+});
+
+/** Return the first chunk of SSE data from a session stream using node:http. */
+function sseGet(
+	port: number,
+	sessionId: string,
+	cursor: string,
+): Promise<{ replyBody: string }> {
+	return new Promise((resolve, reject) => {
+		get(
+			{
+				hostname: "127.0.0.1",
+				port,
+				path: `/api/stream?session=${sessionId}&cursor=${cursor}`,
+			},
+			(res) => {
+				let text = "";
+				const timer = setTimeout(() => {
+					res.destroy();
+					reject(new Error("sseGet timeout"));
+				}, 3000);
+				res.on("data", (chunk: Buffer) => {
+					text += chunk.toString();
+					// Return after enough data arrives (two SSE events max).
+					if ((text.match(/\n\n/g) || []).length >= 2) {
+						clearTimeout(timer);
+						res.destroy();
+						resolve({ replyBody: text });
+					}
+				});
+				res.on("error", (err) => {
+					clearTimeout(timer);
+					reject(err);
+				});
+			},
+		).on("error", reject);
+	});
+}
+
+describe("parseNumericEventId", () => {
+	it("parses evt-N format", () => {
+		expect(parseNumericEventId("evt-0")).toBe(0);
+		expect(parseNumericEventId("evt-1")).toBe(1);
+		expect(parseNumericEventId("evt-999")).toBe(999);
+	});
+
+	it("parses sse-N format", () => {
+		expect(parseNumericEventId("sse-1")).toBe(1);
+		expect(parseNumericEventId("sse-42")).toBe(42);
+	});
+
+	it("returns -1 for unrecognised formats", () => {
+		expect(parseNumericEventId("uuid-123")).toBe(-1);
+		expect(parseNumericEventId("evt-abc")).toBe(-1);
+		expect(parseNumericEventId("abc")).toBe(-1);
+		expect(parseNumericEventId(undefined)).toBe(-1);
+		expect(parseNumericEventId("")).toBe(-1);
+	});
 });
 
 function mockSessionManager(): MockSessionManager {
@@ -210,9 +315,21 @@ function mockSessionManager(): MockSessionManager {
 			(
 				sessionId: string,
 				onEvent: (event: StreamEvent) => void,
+				_opts?: { cursor?: string },
 			): Unsubscribe => {
 				sessionCallbacks.set(sessionId, onEvent);
 				return sessionUnsubscribe;
+			},
+		),
+		openAndSubscribeSession: vi.fn(
+			async (id: string, onEvent: (event: StreamEvent) => void) => {
+				const snapshot = await Promise.resolve({
+					session: { id, title: "Test", status: "idle" as const },
+					messages: [],
+					streamCursor: "evt-0",
+				});
+				sessionCallbacks.set(id, onEvent);
+				return { snapshot, unsubscribe: sessionUnsubscribe };
 			},
 		),
 		subscribeToSessionList: vi.fn(

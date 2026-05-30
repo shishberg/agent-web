@@ -687,6 +687,14 @@ function mockSessionManager(
 		respondToUserRequest: vi.fn().mockResolvedValue(undefined),
 		subscribeToSession: vi.fn(() => vi.fn()),
 		subscribeToSessionList: vi.fn(() => vi.fn()),
+		openAndSubscribeSession: vi.fn().mockResolvedValue({
+			snapshot: {
+				session: { id: "s1", title: "", status: "idle" as const },
+				messages: [],
+				streamCursor: "",
+			},
+			unsubscribe: vi.fn(),
+		}),
 		...overrides,
 	};
 }

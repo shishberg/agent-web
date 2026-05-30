@@ -104,6 +104,15 @@ async function setupMockManager(page: import("@playwright/test").Page) {
 					ctrl.listCallback = null;
 				};
 			},
+
+			openAndSubscribeSession: async (id: string, onEvent: any) => {
+				const mgr = (window as any).__mockSessionManager__;
+				const snapshot = await mgr.openSession(id);
+				const unsubscribe = mgr.subscribeToSession(id, onEvent, {
+					cursor: snapshot.streamCursor,
+				});
+				return { snapshot, unsubscribe };
+			},
 		};
 	});
 }

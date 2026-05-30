@@ -180,6 +180,17 @@ export class RpcSessionManager implements SessionManager {
 		return () => source.close();
 	}
 
+	async openAndSubscribeSession(
+		id: string,
+		onEvent: (event: StreamEvent) => void,
+	): Promise<{ snapshot: SessionSnapshot; unsubscribe: Unsubscribe }> {
+		const snapshot = await this.openSession(id);
+		const unsubscribe = this.subscribeToSession(id, onEvent, {
+			cursor: snapshot.streamCursor,
+		});
+		return { snapshot, unsubscribe };
+	}
+
 	subscribeToSessionList(
 		onUpdate: (sessions: SessionSummary[]) => void,
 	): Unsubscribe {
