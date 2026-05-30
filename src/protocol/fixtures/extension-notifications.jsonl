@@ -1,0 +1,5 @@
+{"type":"agent_start"}
+{"type":"extension_ui_request","id":"notif-1","method":"setStatus","params":{"statusText":"Indexing files 25%"}}
+{"type":"extension_ui_request","id":"notif-2","method":"notify","params":{"message":"Background task complete"}}
+{"type":"extension_ui_request","id":"editor-1","method":"set_editor_text","params":{"text":"draft content here"}}
+{"type":"agent_end"}

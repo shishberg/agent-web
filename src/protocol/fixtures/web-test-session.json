@@ -1,0 +1,32 @@
+[
+  {
+    "type": "session",
+    "id": "session-web-test",
+    "cwd": "/tmp/project",
+    "title": "web-test"
+  },
+  {
+    "type": "message",
+    "id": "record-user-1",
+    "timestamp": 1717000000000,
+    "message": {
+      "role": "user",
+      "content": [
+        { "type": "text", "text": "Say hello from Verandah web" }
+      ]
+    }
+  },
+  {
+    "type": "message",
+    "id": "record-assistant-1",
+    "timestamp": 1717000001000,
+    "message": {
+      "role": "assistant",
+      "content": [
+        { "type": "text", "text": "Hello from Verandah web." }
+      ],
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-5"
+    }
+  }
+]

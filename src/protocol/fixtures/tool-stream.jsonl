@@ -1,0 +1,10 @@
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"message_start","message":{"id":"assistant-1","role":"assistant"}}
+{"type":"message_update","message":{"id":"assistant-1","role":"assistant"},"assistantMessageEvent":{"type":"text_delta","delta":"Let me run a command."}}
+{"type":"tool_execution_start","toolCallId":"tool-abc","toolName":"bash","args":{"command":"ls -la"}}
+{"type":"tool_execution_update","toolCallId":"tool-abc","partialResult":{"content":[{"type":"text","text":"total 12\ndrwxr-xr-x"}]}}
+{"type":"tool_execution_end","toolCallId":"tool-abc","result":{"content":[{"type":"text","text":"total 12\ndrwxr-xr-x  3 user  staff  96 May 30 10:00 .\ndrwxr-xr-x  5 user  staff 160 May 30 09:55 ..\n-rw-r--r--  1 user  staff  42 May 30 09:55 file.txt"}]}}
+{"type":"message_end","message":{"id":"assistant-1","role":"assistant","content":[{"type":"text","text":"Let me run a command."},{"type":"toolCall","id":"tool-abc","name":"bash","input":{"command":"ls -la"}},{"type":"tool_result","tool_use_id":"tool-abc","content":"total 12\ndrwxr-xr-x  3 user  staff  96 May 30 10:00 ."}]}}
+{"type":"turn_end"}
+{"type":"agent_end"}

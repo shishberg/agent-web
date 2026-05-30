@@ -1,0 +1,5 @@
+{"type":"agent_start"}
+{"type":"message_start","message":{"id":"assistant-1","role":"assistant"}}
+{"type":"message_update","message":{"id":"assistant-1","role":"assistant"},"assistantMessageEvent":{"type":"text_delta","delta":"I need your approval."}}
+{"type":"extension_ui_request","id":"confirm-1","method":"confirm","params":{"title":"Run command?","message":"Pi wants to run: rm -rf /tmp/test"}}
+{"type":"message_end","message":{"id":"assistant-1","role":"assistant"}}
