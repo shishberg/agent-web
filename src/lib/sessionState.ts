@@ -821,7 +821,10 @@ function isFireAndForgetExtensionMethod(method: string): boolean {
 
 function messageId(event: PiEvent): string {
   const message = objectField(event.message);
-  return stringField(message?.id) || numberField(message?.timestamp) || stringField(message?.responseId);
+  // SessionManager stream adapters normalize id-less assistant lifecycle
+  // events before this reducer sees them, so all updates for one streamed
+  // message use the same deterministic id.
+  return stringField(message?.id);
 }
 
 function executionToolId(event: PiEvent): string {

@@ -1,4 +1,72 @@
 /**
+ * An event object emitted from a Pi stream (e.g. `message_start`,
+ * `message_update`, `tool_execution_start`).
+ *
+ * The Pi stream often emits assistant lifecycle events whose nested
+ * `message` object has no `message.id`.  This function synthesizes a
+ * deterministic, stable `message.id` from known fields so downstream
+ * consumers (the UI reducer) never have to guess.
+ *
+ * ## Identity contract
+ *
+ * For any event that carries a `message` object with a `role`:
+ *
+ *  1. If `message.id` is present and non-empty, it is preserved as-is.
+ *  2. Otherwise a deterministic, namespaced id is synthesized from the
+ *     message role plus stable Pi fields: `responseId` and/or `timestamp`.
+ *     Pi message lifecycle events carry the same timestamp across
+ *     `message_start`, `message_update`, and `message_end` for the same
+ *     message, and `responseId` ties events to a turn when it is present.
+ *
+ * The event is mutated in-place so callers can pass it straight through
+ * to the reducer.  Returns the same event reference for chaining.
+ *
+ * @param event  A raw Pi stream event.  May be mutated.
+ * @returns      The same event reference, with `message.id` guaranteed
+ *               when the message object has a `role` and at least one
+ *               fallback field is available.
+ */
+export function normalizeStreamEvent(event: Record<string, unknown>): Record<string, unknown> {
+  const message = isRecord(event.message) ? event.message : undefined;
+  if (!message) {
+    return event;
+  }
+
+  const rawRole = message.role;
+  if (typeof rawRole !== "string" || !rawRole) {
+    return event;
+  }
+
+  if (typeof message.id === "string" && message.id) {
+    return event;
+  }
+
+  const syntheticId = synthesizeStreamMessageId(rawRole, message);
+  if (syntheticId) {
+    message.id = syntheticId;
+  }
+
+  return event;
+}
+
+function synthesizeStreamMessageId(
+  role: string,
+  message: Record<string, unknown>,
+): string | undefined {
+  const timestamp = typeof message.timestamp === "number" ? String(message.timestamp) : "";
+  const responseId = typeof message.responseId === "string" && message.responseId ? message.responseId : "";
+
+  if (timestamp) {
+    return `pi:${role}:timestamp:${timestamp}`;
+  }
+  if (responseId) {
+    return `pi:${role}:response:${responseId}`;
+  }
+
+  return undefined;
+}
+
+/**
  * Normalize a transcript array into the frontend-ready message shape.
  *
  * Different backends may produce different snapshot formats:

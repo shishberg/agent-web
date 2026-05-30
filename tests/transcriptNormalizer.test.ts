@@ -1,5 +1,84 @@
 import { describe, expect, it } from "vitest";
-import { normalizeTranscript } from "../src/lib/transcriptNormalizer";
+import { normalizeStreamEvent, normalizeTranscript } from "../src/lib/transcriptNormalizer";
+
+describe("normalizeStreamEvent", () => {
+  it("preserves message.id when already present", () => {
+    const event: Record<string, unknown> = { type: "message_start", message: { id: "m1", role: "assistant" } };
+    normalizeStreamEvent(event);
+    expect((event.message as Record<string, unknown>).id).toBe("m1");
+  });
+
+  it("synthesizes message.id from timestamp when id is missing", () => {
+    const event: Record<string, unknown> = { type: "message_start", message: { role: "assistant", timestamp: 1717000000123 } };
+    normalizeStreamEvent(event);
+    expect((event.message as Record<string, unknown>).id).toBe("pi:assistant:timestamp:1717000000123");
+  });
+
+  it("synthesizes message.id from responseId when timestamp is also missing", () => {
+    const event: Record<string, unknown> = { type: "message_start", message: { role: "assistant", responseId: "resp-abc" } };
+    normalizeStreamEvent(event);
+    expect((event.message as Record<string, unknown>).id).toBe("pi:assistant:response:resp-abc");
+  });
+
+  it("prefers timestamp over responseId when both are present", () => {
+    const event: Record<string, unknown> = { type: "message_start", message: { role: "assistant", timestamp: 9999, responseId: "resp-abc" } };
+    normalizeStreamEvent(event);
+    expect((event.message as Record<string, unknown>).id).toBe("pi:assistant:timestamp:9999");
+  });
+
+  it("preserves message.id over any fallback", () => {
+    const event: Record<string, unknown> = { type: "message_start", message: { role: "assistant", id: "kept", timestamp: 1234, responseId: "resp-abc" } };
+    normalizeStreamEvent(event);
+    expect((event.message as Record<string, unknown>).id).toBe("kept");
+  });
+
+  it("does not mutate events without a message field", () => {
+    const event: Record<string, unknown> = { type: "tool_execution_start", toolCallId: "t1" };
+    const copy = { ...event };
+    normalizeStreamEvent(event);
+    expect(event).toEqual(copy);
+  });
+
+  it("does not mutate events where message has no role", () => {
+    const event: Record<string, unknown> = { type: "some_event", message: { content: "hello" } };
+    const copy = { ...event, message: { ...(event.message as Record<string, unknown>) } };
+    normalizeStreamEvent(event);
+    expect(event).toEqual(copy);
+  });
+
+  it("produces the same id across Verandah-style lifecycle events for the same message", () => {
+    // Verandah streams emit message_start, message_update, message_end
+    // with the same nested message shape but no message.id.
+    const makeEvent = (type: string): Record<string, unknown> => ({
+      type,
+      message: { role: "assistant", timestamp: 1717000000, responseId: "turn-1" },
+    });
+
+    const start = makeEvent("message_start");
+    const update = makeEvent("message_update");
+    const end = makeEvent("message_end");
+
+    normalizeStreamEvent(start);
+    normalizeStreamEvent(update);
+    normalizeStreamEvent(end);
+
+    expect((start.message as Record<string, unknown>).id).toBe("pi:assistant:timestamp:1717000000");
+    expect((update.message as Record<string, unknown>).id).toBe("pi:assistant:timestamp:1717000000");
+    expect((end.message as Record<string, unknown>).id).toBe("pi:assistant:timestamp:1717000000");
+  });
+
+  it("returns the same reference for chaining", () => {
+    const event: Record<string, unknown> = { type: "message_start", message: { role: "assistant", timestamp: 42 } };
+    const result = normalizeStreamEvent(event);
+    expect(result).toBe(event);
+  });
+
+  it("treats empty string message.id as missing", () => {
+    const event: Record<string, unknown> = { type: "message_start", message: { id: "", role: "assistant", timestamp: 1234 } };
+    normalizeStreamEvent(event);
+    expect((event.message as Record<string, unknown>).id).toBe("pi:assistant:timestamp:1234");
+  });
+});
 
 describe("normalizeTranscript", () => {
   it("unwraps session-file message records", () => {

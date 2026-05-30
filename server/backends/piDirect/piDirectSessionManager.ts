@@ -6,7 +6,7 @@ import {
 	type PiRunnerCoreOptions,
 } from "../../runnerCore";
 import { listPiSessions, type PiSessionSummary } from "../../piSessions";
-import { normalizeTranscript } from "../../../src/lib/transcriptNormalizer";
+import { normalizeStreamEvent, normalizeTranscript } from "../../../src/lib/transcriptNormalizer";
 import type {
 	CreateSessionArgs,
 	SessionManager,
@@ -644,6 +644,7 @@ export class PiDirectSessionManager implements SessionManager {
 
 		if (source === "pi") {
 			if (message.type === "event" && this.isRecord(message.event)) {
+				normalizeStreamEvent(message.event);
 				const piType = message.event.type;
 				if (piType === "extension_ui_request") {
 					return this.streamEvent("user_request.created", sessionId, {

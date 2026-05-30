@@ -6,6 +6,13 @@ import {
   reduceSessionEvent,
   reduceSessionResponse
 } from "../src/lib/sessionState";
+import { normalizeStreamEvent } from "../src/lib/transcriptNormalizer";
+
+
+function reduceNormalizedSessionEvent(state: ReturnType<typeof createInitialSessionState>, event: Record<string, unknown>): void {
+  normalizeStreamEvent(event);
+  reduceSessionEvent(state, event);
+}
 
 describe("session state reducer", () => {
   it("adds a local user prompt immediately as a completed message", () => {
@@ -64,24 +71,24 @@ describe("session state reducer", () => {
   it("uses message timestamp as a fallback id for Verandah-streamed assistant events", () => {
     const state = createInitialSessionState();
 
-    reduceSessionEvent(state, { type: "message_start", message: { role: "assistant", timestamp: 1234 } });
-    reduceSessionEvent(state, {
+    reduceNormalizedSessionEvent(state, { type: "message_start", message: { role: "assistant", timestamp: 1234 } });
+    reduceNormalizedSessionEvent(state, {
       type: "message_update",
       message: { role: "assistant", timestamp: 1234, responseId: "response-1" },
       assistantMessageEvent: { type: "text_delta", delta: "Hello" }
     });
-    reduceSessionEvent(state, {
+    reduceNormalizedSessionEvent(state, {
       type: "message_update",
       message: { role: "assistant", timestamp: 1234, responseId: "response-1" },
       assistantMessageEvent: { type: "text_delta", delta: " there" }
     });
-    reduceSessionEvent(state, {
+    reduceNormalizedSessionEvent(state, {
       type: "message_end",
       message: { role: "assistant", timestamp: 1234, responseId: "response-1" }
     });
 
     expect(state.messages).toEqual([
-      expect.objectContaining({ id: "1234", role: "assistant", content: "Hello there", status: "done" })
+      expect.objectContaining({ id: "pi:assistant:timestamp:1234", role: "assistant", content: "Hello there", status: "done" })
     ]);
   });
 
@@ -924,6 +931,158 @@ describe("session state reducer", () => {
 
     expect(state.statusText).toBe("Editor text updated");
     expect(state.extensionRequests).toEqual([]);
+  });
+
+  it("replays a complete Verandah-style id-less assistant stream end-to-end", () => {
+    // Simulate a real Pi/Verandah stream where every message lifecycle event
+    // has a stable timestamp and a shared responseId, but no message.id.
+    // The reducer must build one correctly-ordered assistant message.
+    const state = createInitialSessionState();
+
+    reduceNormalizedSessionEvent(state, { type: "turn_start" });
+
+    // User echo (ignored by the reducer)
+    reduceNormalizedSessionEvent(state, {
+      type: "message_start",
+      message: { id: "user-1", role: "user", content: "check src files" },
+    });
+
+    // Assistant start — no message.id, only timestamp and responseId
+    reduceNormalizedSessionEvent(state, {
+      type: "message_start",
+      message: { role: "assistant", timestamp: 1717000000001, responseId: "turn-1" },
+    });
+
+    reduceNormalizedSessionEvent(state, {
+      type: "message_update",
+      message: { role: "assistant", timestamp: 1717000000001, responseId: "turn-1" },
+      assistantMessageEvent: { type: "text_delta", delta: "Let me " },
+    });
+
+    reduceNormalizedSessionEvent(state, {
+      type: "message_update",
+      message: { role: "assistant", timestamp: 1717000000001, responseId: "turn-1" },
+      assistantMessageEvent: { type: "text_delta", delta: "check." },
+    });
+
+    reduceNormalizedSessionEvent(state, {
+      type: "message_end",
+      message: { role: "assistant", timestamp: 1717000000001, responseId: "turn-1" },
+    });
+
+    reduceNormalizedSessionEvent(state, { type: "turn_end" });
+    reduceNormalizedSessionEvent(state, { type: "agent_end" });
+
+    expect(state.messages).toEqual([
+      expect.objectContaining({
+        id: "pi:assistant:timestamp:1717000000001",
+        role: "assistant",
+        content: "Let me check.",
+        status: "done",
+      }),
+    ]);
+    expect(state.running).toBe(false);
+    expect(state.turnActive).toBe(false);
+  });
+
+  it("replays a complete Verandah-style id-less assistant stream with tool calls", () => {
+    const state = createInitialSessionState();
+
+    // Assistant start — no message.id
+    reduceNormalizedSessionEvent(state, {
+      type: "message_start",
+      message: { role: "assistant", timestamp: 1717000000055, responseId: "turn-2" },
+    });
+
+    reduceNormalizedSessionEvent(state, {
+      type: "message_update",
+      message: { role: "assistant", timestamp: 1717000000055, responseId: "turn-2" },
+      assistantMessageEvent: { type: "text_delta", delta: "Running bash." },
+    });
+
+    reduceNormalizedSessionEvent(state, {
+      type: "tool_execution_start",
+      toolCallId: "tool-abc",
+      toolName: "bash",
+      args: { command: "find . -name '*.ts'" },
+    });
+
+    reduceNormalizedSessionEvent(state, {
+      type: "tool_execution_update",
+      toolCallId: "tool-abc",
+      partialResult: { content: [{ type: "text", text: "src/App.vue\nsrc/main.ts" }] },
+    });
+
+    reduceNormalizedSessionEvent(state, {
+      type: "tool_execution_end",
+      toolCallId: "tool-abc",
+      result: { content: [{ type: "text", text: "src/App.vue\nsrc/main.ts" }] },
+    });
+
+    reduceNormalizedSessionEvent(state, {
+      type: "message_end",
+      message: { role: "assistant", timestamp: 1717000000055, responseId: "turn-2" },
+    });
+
+    expect(state.messages).toEqual([
+      expect.objectContaining({
+        id: "pi:assistant:timestamp:1717000000055",
+        role: "assistant",
+        content: "Running bash.",
+        status: "done",
+        tools: [
+          expect.objectContaining({
+            key: "tool-abc",
+            label: "bash",
+            detail: "find . -name '*.ts'",
+            status: "done",
+          }),
+        ],
+      }),
+    ]);
+    expect(state.tools).toEqual([
+      expect.objectContaining({
+        id: "tool-abc",
+        name: "bash",
+        status: "done",
+      }),
+    ]);
+  });
+
+  it("uses deterministic, stable message identity across an id-less thinking stream", () => {
+    const state = createInitialSessionState();
+
+    reduceNormalizedSessionEvent(state, {
+      type: "message_start",
+      message: { role: "assistant", timestamp: 888, responseId: "think-turn" },
+    });
+
+    reduceNormalizedSessionEvent(state, {
+      type: "message_update",
+      message: { role: "assistant", timestamp: 888, responseId: "think-turn" },
+      assistantMessageEvent: { type: "thinking_delta", delta: "Let me think about this." },
+    });
+
+    reduceNormalizedSessionEvent(state, {
+      type: "message_update",
+      message: { role: "assistant", timestamp: 888, responseId: "think-turn" },
+      assistantMessageEvent: { type: "text_delta", delta: "Here is the answer." },
+    });
+
+    reduceNormalizedSessionEvent(state, {
+      type: "message_end",
+      message: { role: "assistant", timestamp: 888, responseId: "think-turn" },
+    });
+
+    expect(state.messages).toEqual([
+      expect.objectContaining({
+        id: "pi:assistant:timestamp:888",
+        role: "assistant",
+        content: "Here is the answer.",
+        thinking: "Let me think about this.",
+        status: "done",
+      }),
+    ]);
   });
 
   it("surfaces Pi response success and failure records separately from events", () => {

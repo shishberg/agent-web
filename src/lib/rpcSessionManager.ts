@@ -12,6 +12,7 @@ import type {
 } from "./sessionApi";
 import type { BrowserTransport } from "./browserTransport";
 import { createBrowserTransport } from "./browserTransport";
+import { normalizeStreamEvent } from "./transcriptNormalizer";
 
 export type RpcSessionManagerOptions = {
 	/**
@@ -281,6 +282,11 @@ function parseStreamEvent(
 		return null;
 	}
 
+	const payload = isRecord(raw.payload) ? raw.payload : {};
+	if (type === "pi.event" && isRecord(payload.event)) {
+		normalizeStreamEvent(payload.event);
+	}
+
 	return {
 		type,
 		sessionId: typeof raw.sessionId === "string" ? raw.sessionId : undefined,
@@ -290,7 +296,7 @@ function parseStreamEvent(
 			typeof raw.createdAt === "string"
 				? raw.createdAt
 				: new Date().toISOString(),
-		payload: isRecord(raw.payload) ? raw.payload : {},
+		payload,
 	};
 }
 
