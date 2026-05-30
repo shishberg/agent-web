@@ -11,17 +11,13 @@ import { getSessionManager } from "./lib/sessionManagerInstance";
 import type { SessionManager, SessionSummary, StreamEvent, Unsubscribe } from "./lib/sessionApi";
 import { applyViewPatch } from "./protocol/view-reducer";
 import { piStreamEventToPatch } from "./protocol/pi-adapter";
-import { createEmptySessionView, type SessionView } from "./protocol/types";
+import { createEmptySessionView, type SessionView, type UserRequest } from "./protocol/types";
 import {
-  acknowledgeExtensionRequest,
   appendLocalUserMessage,
   createInitialSessionState,
   hydrateSessionFromView,
-  hydrateSessionMessages,
-  reduceSessionEvent,
   reduceSessionResponse,
   reduceSessionViewPatch,
-  type ExtensionRequest,
   type SessionMessage,
   type SessionState
 } from "./lib/sessionState";
@@ -76,7 +72,7 @@ let currentSessionUnsubscribe: Unsubscribe | null = null;
 const activePiSession = computed(() => piSessions.value.find((item) => item.id === activeSessionId.value));
 const activeTitle = computed(() => activePiSession.value?.title ?? draftTitle.value);
 const canSend = computed(() => prompt.value.trim().length > 0);
-const pendingExtension = computed(() => session.extensionRequests[0]);
+const pendingExtension = computed(() => sessionView.pendingRequests[0]);
 const extensionOptions = computed(() => {
   const options = pendingExtension.value?.params.options;
   return Array.isArray(options) ? options.map(String) : [];
@@ -214,7 +210,7 @@ function newChat() {
   draftTitle.value = "New chat";
   prompt.value = "";
   clearSessionRuntime();
-  hydrateSessionMessages(session, []);
+  hydrateSessionFromView(session, createEmptySessionView());
   session.statusText = "Ready for new chat";
   Object.assign(sessionView, createEmptySessionView());
   Object.assign(sessionStatus, setConnected(sessionStatus, "Ready for new chat"));
@@ -233,14 +229,14 @@ async function selectChat(id: string) {
   prompt.value = "";
   isSessionLoading.value = true;
   clearSessionRuntime();
-  hydrateSessionMessages(session, []);
+  hydrateSessionFromView(session, createEmptySessionView());
   session.statusText = "Opening session";
   Object.assign(sessionStatus, setConnecting(sessionStatus, "Opening session"));
 
   const requestedId = id;
   try {
     // Buffer live events until the snapshot is applied so a live event
-    // that arrives before hydrateSessionMessages() can't be overwritten.
+    // that arrives before hydrateSessionFromView() can't be overwritten.
     const pending: StreamEvent[] = [];
     let hydrated = false;
 
@@ -404,7 +400,7 @@ async function sendPrompt() {
   }
 }
 
-async function respondToExtension(request: ExtensionRequest, accepted: boolean) {
+async function respondToExtension(request: UserRequest, accepted: boolean) {
   const sessionId = activeSessionId.value;
   if (sessionId) {
     try {
@@ -418,8 +414,7 @@ async function respondToExtension(request: ExtensionRequest, accepted: boolean) 
       session.statusText = `Extension response failed: ${error instanceof Error ? error.message : String(error)}`;
     }
   }
-  acknowledgeExtensionRequest(session, request.id);
-  // Also clear the pending request from the SessionView so the status
+  // Clear the pending request from the SessionView so the status
   // resolves correctly.
   Object.assign(sessionView, applyViewPatch(sessionView, { type: "clearPendingRequest", id: request.id }));
   if (sessionView.pendingRequests.length === 0) {
@@ -526,15 +521,6 @@ function handleStreamEvent(event: StreamEvent): void {
       stderr.value = stderr.value.slice(0, 20);
       break;
     }
-    case "user_request.created": {
-      Object.assign(sessionStatus, reduceSessionStatusEvent(sessionStatus, event));
-      const request = event.payload.request as Record<string, unknown> | undefined;
-      if (request) {
-        prefillEditorPrompt(request);
-        reduceSessionEvent(session, request);
-      }
-      break;
-    }
     case "error": {
       Object.assign(sessionStatus, reduceSessionStatusEvent(sessionStatus, event));
       isSessionLoading.value = false;
@@ -614,18 +600,6 @@ function firstString(...values: unknown[]): string {
   }
 
   return "";
-}
-
-function prefillEditorPrompt(event: Record<string, unknown>) {
-  if (event.type !== "extension_ui_request" || event.method !== "set_editor_text") {
-    return;
-  }
-
-  const params = typeof event.params === "object" && event.params !== null ? (event.params as Record<string, unknown>) : event;
-  const text = typeof params.text === "string" ? params.text : "";
-  if (text) {
-    prompt.value = text;
-  }
 }
 
 function titleFromPrompt(message: string): string {

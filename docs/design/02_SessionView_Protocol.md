@@ -296,25 +296,84 @@ await expect(page.getByText("Hello from Verandah web.")).toBeVisible();
 
 ## Migration sequence
 
-1. Define `SessionView`, `ViewPatch`, `ConversationItem` types in agent-web protocol layer.
-2. Create `pi-adapter.ts` with `piSnapshotToView` and `piStreamEventToPatch`.
-3. Move existing normalizer logic into the adapter; remove separate `normalizeTranscript`.
-4. Add fixtures from real Pi logs.
-5. Write adapter tests against fixtures.
-6. Change `SessionSnapshot` to carry `view: SessionView` instead of `messages: unknown[]`.
-7. Update PiDirectSessionManager to call `piSnapshotToView`.
-8. Update VerandahSessionManager to call `piSnapshotToView`.
-9. Create `applyViewPatch` reducer; update UI stream handler to use `piStreamEventToPatch`.
-10. Remove all UI-side Pi event interpretation and transcript normalization.
-11. Add backend contract test helper; run against PiDirect and Verandah.
-12. Add browser smoke assertion for persisted transcript text.
-13. Remove `normalizeTranscript` from agent-web public exports once all consumers migrated.
+1. ✅ Define `SessionView`, `ViewPatch`, `ConversationItem` types in agent-web protocol layer.
+2. ✅ Create `pi-adapter.ts` with `piSnapshotToView` and `piStreamEventToPatch`.
+3. ✅ Move existing normalizer logic into the adapter; remove separate `normalizeTranscript`.
+   — `normalizeStreamEvent` and `normalizeTranscript` are now private functions inside `pi-adapter.ts`.
+   — `src/lib/transcriptNormalizer.ts` deleted.
+4. ✅ Add fixtures from real Pi logs.
+5. ✅ Write adapter tests against fixtures.
+6. ✅ Change `SessionSnapshot` to carry `view: SessionView` instead of `messages: unknown[]`.
+7. ✅ Update PiDirectSessionManager to call `piSnapshotToView`.
+8. ✅ Update VerandahSessionManager to call `piSnapshotToView`.
+9. ✅ Create `applyViewPatch` reducer; update UI stream handler to use `piStreamEventToPatch`.
+10. ✅ Remove all UI-side Pi event interpretation and transcript normalization.
+    — `piDirectSessionManager` and `rpcSessionManager` no longer call `normalizeStreamEvent`.
+    — App.vue no longer imports `reduceSessionEvent`, `hydrateSessionMessages`, or handles
+      `user_request.created` raw-Pi branch. All raw Pi shape handling is centralized in
+      `src/protocol/pi-adapter.ts`.
+    — `sessionStatus.ts` no longer interprets raw Pi events (`pi.event` / `user_request.created`).
+    — Legacy functions (`reduceSessionEvent`, `hydrateSessionMessages`) remain exported but
+      are not used by the UI; they exist for test backward compatibility only.
+11. ✅ Add backend contract test helper; run against PiDirect and Verandah.
+12. ✅ Add browser smoke assertion for persisted transcript text.
+13. ✅ Remove `normalizeTranscript` from agent-web public exports once all consumers migrated.
+
+### Remaining migration items
+
+- `reduceSessionEvent` is still exported from `sessionState.ts` but is unused in production;
+  future work should remove it and its legacy tests.
+- `hydrateSessionMessages` is still exported but unused in production; same.
+- The e2e test at `tests/e2e/chat-ui.spec.ts:852` still uses `user_request.created` as a
+  mock stream event; update to `pi.event` with `extension_ui_request` payload.
 
 ## Acceptance criteria
 
-- `SessionSnapshot` carries a typed `SessionView`, never `unknown[]`.
-- No UI code unwraps `{ type: "message", message: ... }` or inspects Pi lifecycle events.
-- PiDirect and Verandah call the same `piSnapshotToView`.
-- Fixtures matching real `web-test` data are tested.
-- Browser smoke test asserts visible bubble text.
-- A backend returning raw Pi records fails contract tests at build time.
+- ✅ `SessionSnapshot` carries a typed `SessionView`, never `unknown[]`.
+- ✅ No UI code unwraps `{ type: "message", message: ... }` or inspects Pi lifecycle events.
+- ✅ PiDirect and Verandah call the same `piSnapshotToView`.
+- ✅ Fixtures matching real `web-test` data are tested.
+- ✅ Browser smoke test asserts visible bubble text.
+- ✅ A backend returning raw Pi records fails contract tests at build time.
+
+## Implementation notes (final)
+
+### Actual module layout
+
+```
+src/
+  protocol/
+    types.ts             — SessionView, ConversationItem, ViewPatch, etc.
+    contract.ts          — assertValidSessionView, assertNoRawPiRecords
+    view-reducer.ts      — applyViewPatch (pure SessionView → SessionView)
+    pi-adapter.ts        — piSnapshotToView, piStreamEventToPatch
+                           (private: normalizeStreamEvent, normalizeTranscript)
+    fixtures/            — Real Pi session files and stream logs (seeded)
+  lib/
+    sessionApi.ts        — SessionSnapshot (with view: SessionView), SessionManager interface
+    sessionState.ts      — reduceSessionViewPatch + hydrateSessionFromView
+                           (legacy reduceSessionEvent / hydrateSessionMessages
+                           remain exported for test compat, unused in production)
+    rpcSessionManager.ts — HTTP/RPC SessionManager (delegates normalization to adapter)
+  sessionProtocolEntry.ts — Public subpath export (no Vue, no CSS)
+  index.ts               — Main package entry (Vue app + session manager)
+```
+
+### Key design invariants
+
+1. **Only `pi-adapter.ts` knows Pi wire shapes.**  `normalizeStreamEvent` and
+   `normalizeTranscript` are private to that module; no other module imports them.
+
+2. **Session managers produce raw events; the adapter converts.**
+   `piDirectSessionManager` and `rpcSessionManager` emit `StreamEvent` objects
+   with raw Pi payloads.  The App stream handler routes them through
+   `piStreamEventToPatch` → `applyViewPatch` → `reduceSessionViewPatch`.
+   Session managers no longer call `normalizeStreamEvent` directly.
+
+3. **Snapshot normalization happens once.**  `piSnapshotToView` calls
+   `normalizeTranscript` internally.  Backends pass raw records directly;
+   there is no pre-normalization step.
+
+4. **Contract tests enforce the boundary.**  `assertNoRawPiRecords` rejects
+   any `ConversationItem` that carries `type`, `message`, `responseId`,
+   or `stopReason` — all raw Pi shape indicators.

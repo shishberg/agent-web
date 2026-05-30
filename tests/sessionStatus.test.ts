@@ -3,6 +3,7 @@ import {
   connectionLabel,
   createInitialSessionStatus,
   reduceSessionStatusEvent,
+  reduceSessionStatusFromPatch,
   setConnected,
   setConnecting,
   setIdle,
@@ -14,6 +15,7 @@ import {
   type SessionStatusState,
 } from "../src/lib/sessionStatus";
 import type { SessionSummary, StreamEvent } from "../src/lib/sessionApi";
+import type { RunStatus, ViewPatch } from "../src/protocol/types";
 
 function streamEvent(
   type: StreamEvent["type"],
@@ -31,6 +33,10 @@ function streamEvent(
 
 function initial(): SessionStatusState {
   return createInitialSessionStatus();
+}
+
+function setStatusPatch(status: RunStatus, statusText?: string): ViewPatch & { type: "setStatus" } {
+  return { type: "setStatus", status, statusText } as ViewPatch & { type: "setStatus" };
 }
 
 describe("session status model", () => {
@@ -127,10 +133,6 @@ describe("session status model", () => {
   it("handles session.updated with idle backend status — completes a running turn", () => {
     // Start running
     let s = setRunning(initial());
-    s = reduceSessionStatusEvent(
-      s,
-      streamEvent("pi.event", { event: { type: "agent_start" } }),
-    );
     expect(s.displayStatus).toBe("running");
 
     // Backend marks idle → turn complete
@@ -217,57 +219,58 @@ describe("session status model", () => {
     expect(s.runnerStatus).toBe("exited");
   });
 
-  // ── pi.event agent lifecycle ──
+  // ── ViewPatch setStatus agent lifecycle ──
 
-  it("handles agent_start → running", () => {
-    const s = reduceSessionStatusEvent(
+  it("handles agent_start → running via reduceSessionStatusFromPatch", () => {
+    const s = reduceSessionStatusFromPatch(
       setConnected(initial()),
-      streamEvent("pi.event", { event: { type: "agent_start" } }),
+      setStatusPatch("running", "Agent running"),
     );
     expect(s.displayStatus).toBe("running");
     expect(s.turnActive).toBe(true);
     expect(s.statusText).toBe("Agent running");
   });
 
-  it("handles agent_end → connected", () => {
-    let s = reduceSessionStatusEvent(
-      setConnected(initial()),
-      streamEvent("pi.event", { event: { type: "agent_start" } }),
-    );
-    s = reduceSessionStatusEvent(
-      s,
-      streamEvent("pi.event", { event: { type: "agent_end" } }),
+  it("handles agent_end → connected via reduceSessionStatusFromPatch", () => {
+    const s = reduceSessionStatusFromPatch(
+      setRunning(initial()),
+      setStatusPatch("connected", "Agent finished"),
     );
     expect(s.displayStatus).toBe("connected");
     expect(s.turnActive).toBe(false);
     expect(s.statusText).toBe("Agent finished");
   });
 
-  it("handles agent_end while blocked → stays blocked", () => {
+  it("reduceSessionStatusFromPatch applies setStatus patches directly", () => {
+    // The adapter (piStreamEventToPatch) guards transitions — when
+    // status is blocked, agent_end produces null instead of a patch.
+    // The reducer itself is a straightforward state machine.
     let s = reduceSessionStatusEvent(
       setConnected(initial()),
       streamEvent("session.updated", {
         session: { id: "s1", title: "Test", status: "blocked" } as SessionSummary,
       }),
     );
-    s = reduceSessionStatusEvent(
-      s,
-      streamEvent("pi.event", { event: { type: "agent_end" } }),
-    );
     expect(s.displayStatus).toBe("blocked");
+
+    s = reduceSessionStatusFromPatch(
+      s,
+      setStatusPatch("connected", "Agent finished"),
+    );
+    expect(s.displayStatus).toBe("connected");
     expect(s.turnActive).toBe(false);
   });
 
-  it("handles turn_start and turn_end", () => {
-    let s = reduceSessionStatusEvent(
+  it("handles turn activity via reduceSessionStatusFromPatch running/connected", () => {
+    let s = reduceSessionStatusFromPatch(
       setConnected(initial()),
-      streamEvent("pi.event", { event: { type: "turn_start" } }),
+      setStatusPatch("running"),
     );
     expect(s.turnActive).toBe(true);
 
-    s = reduceSessionStatusEvent(
+    s = reduceSessionStatusFromPatch(
       s,
-      streamEvent("pi.event", { event: { type: "turn_end" } }),
+      setStatusPatch("connected"),
     );
     expect(s.turnActive).toBe(false);
   });
@@ -295,105 +298,43 @@ describe("session status model", () => {
     expect(s.statusText).toBe("Stream error");
   });
 
-  // ── user_request.created (extension requests) ──
+  // ── status text updates via reduceSessionStatusFromPatch ──
 
-  it("transitions to blocked when user_request arrives during running", () => {
-    const s = reduceSessionStatusEvent(
+  it("updates status text for compaction lifecycle via reduceSessionStatusFromPatch", () => {
+    let s = reduceSessionStatusFromPatch(
       setRunning(initial()),
-      streamEvent("user_request.created", {
-        request: { id: "req-1", method: "confirm" },
-      }),
-    );
-    expect(s.displayStatus).toBe("blocked");
-  });
-
-  it("does not change status on user_request when not running", () => {
-    const s = reduceSessionStatusEvent(
-      setConnected(initial()),
-      streamEvent("user_request.created", {
-        request: { id: "req-1", method: "confirm" },
-      }),
-    );
-    expect(s.displayStatus).toBe("connected");
-  });
-
-  // ── extension_ui_request via pi.event ──
-
-  it("handles blocking extension request via pi.event → blocked", () => {
-    const s = reduceSessionStatusEvent(
-      setRunning(initial()),
-      streamEvent("pi.event", {
-        event: { type: "extension_ui_request", method: "confirm", id: "ext-1" },
-      }),
-    );
-    expect(s.displayStatus).toBe("blocked");
-  });
-
-  it("handles fire-and-forget set_editor_text → status text update", () => {
-    const s = reduceSessionStatusEvent(
-      setConnected(initial()),
-      streamEvent("pi.event", {
-        event: { type: "extension_ui_request", method: "set_editor_text" },
-      }),
-    );
-    expect(s.statusText).toBe("Editor text updated");
-    expect(s.displayStatus).toBe("connected");
-  });
-
-  it("handles fire-and-forget setStatus → status text update", () => {
-    const s = reduceSessionStatusEvent(
-      setConnected(initial()),
-      streamEvent("pi.event", {
-        event: {
-          type: "extension_ui_request",
-          method: "setStatus",
-          params: { statusText: "Indexing files" },
-        },
-      }),
-    );
-    expect(s.statusText).toBe("Indexing files");
-    expect(s.displayStatus).toBe("connected");
-  });
-
-  // ── compaction / auto-retry (via pi.event) ──
-
-  it("updates status text for compaction lifecycle", () => {
-    let s = reduceSessionStatusEvent(
-      setRunning(initial()),
-      streamEvent("pi.event", { event: { type: "compaction_start" } }),
+      setStatusPatch("running", "Compacting session"),
     );
     expect(s.statusText).toBe("Compacting session");
 
-    s = reduceSessionStatusEvent(
+    s = reduceSessionStatusFromPatch(
       s,
-      streamEvent("pi.event", { event: { type: "compaction_end" } }),
+      setStatusPatch("running", "Compaction complete"),
     );
     expect(s.statusText).toBe("Compaction complete");
   });
 
-  it("updates status text for auto_retry lifecycle", () => {
-    let s = reduceSessionStatusEvent(
+  it("updates status text for auto_retry lifecycle via reduceSessionStatusFromPatch", () => {
+    let s = reduceSessionStatusFromPatch(
       setRunning(initial()),
-      streamEvent("pi.event", { event: { type: "auto_retry_start" } }),
+      setStatusPatch("running", "Auto retry running"),
     );
     expect(s.statusText).toBe("Auto retry running");
 
-    s = reduceSessionStatusEvent(
+    s = reduceSessionStatusFromPatch(
       s,
-      streamEvent("pi.event", { event: { type: "auto_retry_end" } }),
+      setStatusPatch("running", "Auto retry finished"),
     );
     expect(s.statusText).toBe("Auto retry finished");
   });
 
-  it("handles extension_error via pi.event", () => {
-    let s = setRunning(initial());
-    s = reduceSessionStatusEvent(
-      s,
-      streamEvent("pi.event", {
-        event: { type: "extension_error", message: "permission denied" },
-      }),
+  it("handles extension error via reduceSessionStatusFromPatch setStatus failed", () => {
+    const s = reduceSessionStatusFromPatch(
+      setRunning(initial()),
+      setStatusPatch("failed", "permission denied"),
     );
     expect(s.statusText).toBe("permission denied");
+    expect(s.displayStatus).toBe("failed");
   });
 
   // ── full lifecycle transitions ──
@@ -409,17 +350,17 @@ describe("session status model", () => {
     expect(statusBadgeText(s)).toBe("Connected");
 
     // Agent starts
-    s = reduceSessionStatusEvent(
+    s = reduceSessionStatusFromPatch(
       s,
-      streamEvent("pi.event", { event: { type: "agent_start" } }),
+      setStatusPatch("running", "Agent running"),
     );
     expect(s.displayStatus).toBe("running");
     expect(statusBadgeText(s)).toBe("Running");
 
     // Agent ends → back to connected
-    s = reduceSessionStatusEvent(
+    s = reduceSessionStatusFromPatch(
       s,
-      streamEvent("pi.event", { event: { type: "agent_end" } }),
+      setStatusPatch("connected", "Agent finished"),
     );
     expect(s.displayStatus).toBe("connected");
     expect(s.turnActive).toBe(false);
@@ -461,9 +402,9 @@ describe("session status model", () => {
     let s = setConnected(initial());
 
     // Start running
-    s = reduceSessionStatusEvent(
+    s = reduceSessionStatusFromPatch(
       s,
-      streamEvent("pi.event", { event: { type: "agent_start" } }),
+      setStatusPatch("running", "Agent running"),
     );
     expect(s.displayStatus).toBe("running");
 
@@ -476,13 +417,10 @@ describe("session status model", () => {
     );
     expect(s.displayStatus).toBe("blocked");
 
-    // Agent ends while blocked
-    s = reduceSessionStatusEvent(
-      s,
-      streamEvent("pi.event", { event: { type: "agent_end" } }),
-    );
-    expect(s.displayStatus).toBe("blocked");
-    expect(s.turnActive).toBe(false);
+    // The adapter suppresses agent_end when blocked (returns null),
+    // so the reducer never sees an agent_end patch in that state.
+    // Here we verify that the blocked transition is handled at the
+    // session.updated level.
 
     // Backend unblocks
     s = reduceSessionStatusEvent(
@@ -497,9 +435,9 @@ describe("session status model", () => {
   it("transitions: connected → running → failed → stopped (error then exit)", () => {
     let s = setConnected(initial());
 
-    s = reduceSessionStatusEvent(
+    s = reduceSessionStatusFromPatch(
       s,
-      streamEvent("pi.event", { event: { type: "agent_start" } }),
+      setStatusPatch("running", "Agent running"),
     );
     expect(s.displayStatus).toBe("running");
 

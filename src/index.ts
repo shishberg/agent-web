@@ -1,7 +1,6 @@
 import AgentWebApp from "./App.vue";
 
 export { AgentWebApp };
-export { normalizeTranscript } from "./lib/transcriptNormalizer";
 export { createRpcSessionManager } from "./lib/rpcSessionManager";
 export type { RpcSessionManagerOptions } from "./lib/rpcSessionManager";
 export { createBrowserTransport } from "./lib/browserTransport";

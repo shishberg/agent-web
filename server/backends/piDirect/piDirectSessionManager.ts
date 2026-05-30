@@ -6,7 +6,6 @@ import {
 	type PiRunnerCoreOptions,
 } from "../../runnerCore";
 import { listPiSessions, type PiSessionSummary } from "../../piSessions";
-import { normalizeStreamEvent, normalizeTranscript } from "../../../src/lib/transcriptNormalizer";
 import { piSnapshotToView } from "../../../src/protocol/pi-adapter";
 import type {
 	CreateSessionArgs,
@@ -158,7 +157,7 @@ export class PiDirectSessionManager implements SessionManager {
 
 		const persisted = this.openSessionFn(session.sessionPath, this.sessionDir);
 		const context = persisted.buildSessionContext();
-		session.messages = normalizeTranscript(context.messages);
+		session.messages = context.messages;
 		session.state = {
 			sessionId: persisted.getSessionId(),
 			sessionFile: persisted.getSessionFile(),
@@ -663,13 +662,6 @@ export class PiDirectSessionManager implements SessionManager {
 
 		if (source === "pi") {
 			if (message.type === "event" && this.isRecord(message.event)) {
-				normalizeStreamEvent(message.event);
-				const piType = message.event.type;
-				if (piType === "extension_ui_request") {
-					return this.streamEvent("user_request.created", sessionId, {
-						request: message.event,
-					});
-				}
 				return this.streamEvent("pi.event", sessionId, {
 					event: message.event,
 				});

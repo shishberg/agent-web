@@ -10,7 +10,6 @@
  *   src/protocol/types.ts
  *   src/protocol/view-reducer.ts
  *   src/protocol/pi-adapter.ts
- *   src/lib/transcriptNormalizer.ts
  */
 export {
   applyViewPatch,

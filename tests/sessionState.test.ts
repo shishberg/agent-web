@@ -7,11 +7,35 @@ import {
   reduceSessionEvent,
   reduceSessionResponse
 } from "../src/lib/sessionState";
-import { normalizeStreamEvent } from "../src/lib/transcriptNormalizer";
 
+/**
+ * Inline id synthesis matching the adapter's normalizeStreamEvent behavior,
+ * used only in legacy reduceSessionEvent tests that exercise the old
+ * Pi event reducer directly.
+ */
+function normalizeStreamEventForTest(event: Record<string, unknown>): void {
+  const message = typeof event.message === "object" && event.message !== null && !Array.isArray(event.message)
+    ? (event.message as Record<string, unknown>)
+    : undefined;
+  if (!message) return;
+
+  const rawRole = message.role;
+  if (typeof rawRole !== "string" || !rawRole) return;
+
+  if (typeof message.id === "string" && message.id) return;
+
+  const timestamp = typeof message.timestamp === "number" ? String(message.timestamp) : "";
+  const responseId = typeof message.responseId === "string" && message.responseId ? message.responseId : "";
+
+  if (timestamp) {
+    message.id = `pi:${rawRole}:timestamp:${timestamp}`;
+  } else if (responseId) {
+    message.id = `pi:${rawRole}:response:${responseId}`;
+  }
+}
 
 function reduceNormalizedSessionEvent(state: ReturnType<typeof createInitialSessionState>, event: Record<string, unknown>): void {
-  normalizeStreamEvent(event);
+  normalizeStreamEventForTest(event);
   reduceSessionEvent(state, event);
 }
 

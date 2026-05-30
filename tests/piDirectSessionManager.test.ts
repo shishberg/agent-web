@@ -569,7 +569,7 @@ describe("PiDirectSessionManager", () => {
 			unsub();
 		});
 
-		it("wraps extension UI requests as user_request.created events", async () => {
+		it("routes extension UI requests through the protocol adapter", async () => {
 			const resultPromise = manager.createSession({ prompt: "extension test" });
 
 			process.emit("pi-event", {
@@ -613,9 +613,9 @@ describe("PiDirectSessionManager", () => {
 
 			expect(events).toHaveLength(1);
 			const streamEvent = events[0] as Record<string, unknown>;
-			expect(streamEvent.type).toBe("user_request.created");
+			expect(streamEvent.type).toBe("pi.event");
 			expect(streamEvent.payload).toEqual({
-				request: {
+				event: {
 					type: "extension_ui_request",
 					id: "ext-99",
 					method: "confirm",

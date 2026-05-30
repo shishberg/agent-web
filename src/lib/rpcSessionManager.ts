@@ -12,7 +12,6 @@ import type {
 } from "./sessionApi";
 import type { BrowserTransport } from "./browserTransport";
 import { createBrowserTransport } from "./browserTransport";
-import { normalizeStreamEvent } from "./transcriptNormalizer";
 
 export type RpcSessionManagerOptions = {
 	/**
@@ -294,9 +293,6 @@ function parseStreamEvent(
 	}
 
 	const payload = isRecord(raw.payload) ? raw.payload : {};
-	if (type === "pi.event" && isRecord(payload.event)) {
-		normalizeStreamEvent(payload.event);
-	}
 
 	return {
 		type,

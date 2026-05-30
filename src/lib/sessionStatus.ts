@@ -130,11 +130,6 @@ export function reduceSessionStatusEvent(
       const summary = event.payload?.session as SessionSummary | undefined;
       return reduceBackendStatus(state, summary);
     }
-    case "pi.event": {
-      const piEvent = event.payload?.event as Record<string, unknown> | undefined;
-      if (!piEvent) return state;
-      return reducePiEventType(state, piEvent);
-    }
     case "pi.status": {
       const piStatus = (event.payload?.status as string) ?? "";
       return reducePiStatus(state, piStatus);
@@ -144,13 +139,6 @@ export function reduceSessionStatusEvent(
         ? event.payload.message
         : "Stream error";
       return reduceError(state, message);
-    }
-    case "user_request.created": {
-      // Extension requests mean Pi is blocked waiting for user input.
-      return {
-        ...state,
-        displayStatus: state.displayStatus === "running" ? "blocked" : state.displayStatus,
-      };
     }
     default:
       return state;
@@ -217,75 +205,6 @@ function reduceBackendStatus(
       };
     default:
       return { ...state, backendStatus: next };
-  }
-}
-
-function reducePiEventType(
-  state: SessionStatusState,
-  event: Record<string, unknown>,
-): SessionStatusState {
-  const type = typeof event.type === "string" ? event.type : "";
-
-  switch (type) {
-    case "agent_start":
-      return {
-        ...state,
-        displayStatus: "running",
-        turnActive: true,
-        statusText: "Agent running",
-      };
-    case "agent_end":
-      return {
-        ...state,
-        displayStatus: state.backendStatus === "blocked" ? "blocked" : "connected",
-        turnActive: false,
-        statusText: "Agent finished",
-      };
-    case "turn_start":
-      return { ...state, turnActive: true };
-    case "turn_end":
-      return { ...state, turnActive: false };
-    case "compaction_start":
-      return { ...state, statusText: "Compacting session" };
-    case "compaction_end":
-      return { ...state, statusText: "Compaction complete" };
-    case "auto_retry_start":
-      return { ...state, statusText: "Auto retry running" };
-    case "auto_retry_end":
-      return { ...state, statusText: "Auto retry finished" };
-    case "extension_error": {
-      const errorMsg = typeof event.message === "string" ? event.message : "";
-      return { ...state, statusText: errorMsg || "Extension error" };
-    }
-    case "extension_ui_request": {
-      // Fire-and-forget extension notifications update status text
-      const method = typeof event.method === "string" ? event.method : "";
-      if (method === "set_editor_text") {
-        return { ...state, statusText: "Editor text updated" };
-      }
-      if (["notify", "setStatus", "setWidget", "setTitle"].includes(method)) {
-        const params = typeof event.params === "object" && event.params !== null
-          ? (event.params as Record<string, unknown>)
-          : undefined;
-        const text = typeof params?.statusText === "string"
-          ? params.statusText
-          : typeof params?.message === "string"
-            ? params.message
-            : typeof params?.status === "string"
-              ? params.status
-              : typeof params?.title === "string"
-                ? params.title
-                : method;
-        return { ...state, statusText: text };
-      }
-      // Blocking extension request
-      return {
-        ...state,
-        displayStatus: state.displayStatus === "running" ? "blocked" : state.displayStatus,
-      };
-    }
-    default:
-      return state;
   }
 }
 
