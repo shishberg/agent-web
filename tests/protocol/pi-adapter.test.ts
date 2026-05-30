@@ -4,7 +4,8 @@ import { describe, expect, it } from "vitest";
 import { piSnapshotToView, piStreamEventToPatch } from "../../src/protocol/pi-adapter";
 import { applyViewPatch } from "../../src/protocol/view-reducer";
 import { createEmptySessionView } from "../../src/protocol/types";
-import type { ConversationItem, SessionView } from "../../src/protocol/types";
+import type { ConversationItem } from "../../src/protocol/types";
+import { expectValidSessionView, expectNoRawPiRecords } from "../helpers/sessionViewContract";
 import webTestSession from "../../src/protocol/fixtures/web-test-session.json";
 
 // ── Fixture helpers ──
@@ -53,16 +54,16 @@ describe("piSnapshotToView", () => {
     expect(view.statusText).toBe("Session loaded");
   });
 
-  it("produces items without raw Pi wrapping shapes", () => {
+  it("produces items with valid kinds and no raw Pi fields", () => {
     const view = piSnapshotToView(webTestSession);
     for (const item of view.items) {
+      // Every item has kind and id
+      expect(item.kind).toMatch(/^(user|assistant|tool|notice)$/);
+      expect(item.id).toBeTruthy();
       // No raw Pi shapes leaked
       expect(item).not.toHaveProperty("type");
       expect(item).not.toHaveProperty("message");
       expect(item).not.toHaveProperty("responseId");
-      // Every item has kind and id
-      expect(item.kind).toMatch(/^(user|assistant|tool|notice)$/);
-      expect(item.id).toBeTruthy();
     }
   });
 
@@ -894,21 +895,17 @@ describe("snapshot + stream integration", () => {
   });
 });
 
-// ── Contract test helpers ──
+// ── Contract validation ──
 
 describe("contract validation", () => {
-  function expectValidSessionView(view: SessionView): void {
-    for (const item of view.items) {
-      expect(item.id).toBeTruthy();
-      expect(item.kind).toMatch(/user|assistant|tool|notice/);
-      // No raw Pi shapes leaked
-      expect(item).not.toHaveProperty("type");
-      expect(item).not.toHaveProperty("message");
-    }
-  }
-
   it("web-test-session produces a contract-valid view", () => {
     const view = piSnapshotToView(webTestSession);
     expectValidSessionView(view);
+    expectNoRawPiRecords(view);
+  });
+
+  it("produces items without raw Pi wrapping shapes", () => {
+    const view = piSnapshotToView(webTestSession);
+    expectNoRawPiRecords(view);
   });
 });

@@ -26,5 +26,6 @@ export type {
   ViewPatch,
 } from "./types";
 export { createEmptySessionView } from "./types";
+export { assertNoRawPiRecords, assertValidSessionView } from "./contract";
 export { applyViewPatch } from "./view-reducer";
 export { piSnapshotToView, piStreamEventToPatch } from "./pi-adapter";

@@ -19,6 +19,8 @@ const mod = await import("@shishberg/agent-web/session-protocol");
 
 const functions = [
   "applyViewPatch",
+  "assertNoRawPiRecords",
+  "assertValidSessionView",
   "createEmptySessionView",
   "piSnapshotToView",
   "piStreamEventToPatch",
@@ -38,7 +40,10 @@ if (!view || view.session?.id !== "test") {
   process.exit(1);
 }
 
-console.log("✓ Package self-reference import works, all 4 adapters are callable");
+mod.assertValidSessionView(view);
+mod.assertNoRawPiRecords(view);
+
+console.log("✓ Package self-reference import works, protocol helpers are callable");
 
 // ---------------------------------------------------------------------------
 // 2. Bundle inspection — walk entrypoint and all local chunks

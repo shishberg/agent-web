@@ -14,6 +14,8 @@
  */
 export {
   applyViewPatch,
+  assertNoRawPiRecords,
+  assertValidSessionView,
   createEmptySessionView,
   piSnapshotToView,
   piStreamEventToPatch,
