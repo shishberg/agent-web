@@ -194,6 +194,7 @@ function newChat() {
   activeSessionId.value = null;
   draftSessionPath.value = null;
   draftTitle.value = "New chat";
+  prompt.value = "";
   clearSessionRuntime();
   hydrateSessionMessages(session, []);
   session.statusText = "Ready for new chat";
@@ -210,6 +211,7 @@ async function selectChat(id: string) {
   activeSessionId.value = id;
   draftSessionPath.value = null;
   draftTitle.value = item.title;
+  prompt.value = "";
   isSessionLoading.value = true;
   clearSessionRuntime();
   hydrateSessionMessages(session, []);
