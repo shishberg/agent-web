@@ -10,8 +10,18 @@ import type {
 	Unsubscribe,
 	UserRequestResponse,
 } from "./sessionApi";
+import type { BrowserTransport } from "./browserTransport";
+import { createBrowserTransport } from "./browserTransport";
 
 export type RpcSessionManagerOptions = {
+	/**
+	 * Pre-built transport.  When provided, the individual `fetch`,
+	 * `EventSource`, and `eventSource` options are ignored.
+	 * `baseUrl` is still applied by the session manager for URL
+	 * construction, regardless of whether a transport is supplied.
+	 */
+	transport?: BrowserTransport;
+
 	baseUrl?: string;
 	fetch?: typeof globalThis.fetch;
 	EventSource?: typeof globalThis.EventSource;
@@ -61,22 +71,17 @@ export class RpcSessionManager implements SessionManager {
 	readonly capabilities = CAPABILITIES;
 
 	private readonly baseUrl: string;
-	private readonly fetchFn: typeof globalThis.fetch;
-	private readonly EventSourceCtor: typeof globalThis.EventSource;
+	private readonly transport: BrowserTransport;
 
 	constructor(options: RpcSessionManagerOptions = {}) {
 		this.baseUrl = options.baseUrl?.replace(/\/+$/, "") ?? "";
-		const fetchFn = options.fetch ?? globalThis.fetch?.bind(globalThis);
-		this.EventSourceCtor =
-			options.EventSource ?? options.eventSource ?? globalThis.EventSource;
 
-		if (!fetchFn) {
-			throw new Error("fetch is not available in this environment.");
-		}
-		this.fetchFn = fetchFn;
-		if (!this.EventSourceCtor) {
-			throw new Error("EventSource is not available in this environment.");
-		}
+		this.transport =
+			options.transport ??
+			createBrowserTransport({
+				fetch: options.fetch,
+				EventSource: options.EventSource ?? options.eventSource,
+			});
 	}
 
 	async listSessions(query?: {
@@ -159,7 +164,7 @@ export class RpcSessionManager implements SessionManager {
 		onEvent: (event: StreamEvent) => void,
 		opts?: { cursor?: string },
 	): Unsubscribe {
-		const source = new this.EventSourceCtor(
+		const source = this.transport.createEventSource(
 			this.buildUrl("/api/stream", { session: sessionId, cursor: opts?.cursor }),
 		);
 		for (const type of STREAM_EVENT_TYPES) {
@@ -177,7 +182,7 @@ export class RpcSessionManager implements SessionManager {
 	subscribeToSessionList(
 		onUpdate: (sessions: SessionSummary[]) => void,
 	): Unsubscribe {
-		const source = new this.EventSourceCtor(
+		const source = this.transport.createEventSource(
 			this.buildUrl("/api/stream", { list: "true" }),
 		);
 		// The list subscription only needs list update events; session-scoped
@@ -198,7 +203,7 @@ export class RpcSessionManager implements SessionManager {
 		init: RequestInit,
 		query?: Record<string, string | undefined>,
 	): Promise<T> {
-		const response = await this.fetchFn(this.buildUrl(path, query), init);
+		const response = await this.transport.fetch(this.buildUrl(path, query), init);
 		const body = await readBody(response);
 
 		if (!response.ok) {

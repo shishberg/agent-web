@@ -14,5 +14,6 @@
     "strict": true,
     "types": ["node", "vitest/globals"]
   },
-  "include": ["src", "server", "tests", "vite.config.ts", "vite.lib.config.ts"]
+  "include": ["src", "server", "tests", "vite.config.ts", "vite.lib.config.ts"],
+  "exclude": ["tests/e2e"]
 }

@@ -3,6 +3,11 @@ import AgentWebApp from "./App.vue";
 export { AgentWebApp };
 export { createRpcSessionManager } from "./lib/rpcSessionManager";
 export type { RpcSessionManagerOptions } from "./lib/rpcSessionManager";
+export { createBrowserTransport } from "./lib/browserTransport";
+export type {
+	BrowserTransport,
+	CreateBrowserTransportOptions,
+} from "./lib/browserTransport";
 export type {
 	CreateSessionArgs,
 	SendResult,

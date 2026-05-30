@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRpcSessionManager } from "../src/lib/rpcSessionManager";
+import {
+	createBrowserTransport,
+	type BrowserTransport,
+} from "../src/lib/browserTransport";
 import type { SessionSummary, StreamEvent } from "../src/lib/sessionApi";
 
 type FetchCall = {
@@ -233,6 +237,81 @@ describe("RpcSessionManager", () => {
 
 		unsubscribe();
 		expect(eventSources[0].close).toHaveBeenCalledTimes(1);
+	});
+
+	it("accepts an explicit transport option", async () => {
+		const transport: BrowserTransport = {
+			fetch: vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+				fetchCalls.push({ url: String(input), init });
+				const response = fetchQueue.shift();
+				if (!response) throw new Error("Unexpected fetch call");
+				return response;
+			}),
+			createEventSource: (url: string | URL) =>
+				new MockEventSource(url) as unknown as EventSource,
+		};
+
+		queueJson({ sessions: [{ id: "s1", title: "T", status: "idle" }] });
+		const manager = createRpcSessionManager({
+			transport,
+			baseUrl: "http://transport.test",
+		});
+
+		await manager.listSessions();
+
+		expect(fetchCalls[0]).toMatchObject({
+			url: "http://transport.test/api/sessions",
+		});
+	});
+
+	it("prefers transport over individual fetch option", async () => {
+		const transportFetch = vi.fn(async (input: RequestInfo | URL) => {
+			fetchCalls.push({ url: String(input) });
+			const response = fetchQueue.shift();
+			if (!response) throw new Error("Unexpected fetch call");
+			return response;
+		});
+		const transport: BrowserTransport = {
+			fetch: transportFetch,
+			createEventSource: (url: string | URL) =>
+				new MockEventSource(url) as unknown as EventSource,
+		};
+
+		queueJson({ sessions: [] });
+		const manager = createRpcSessionManager({
+			transport,
+			fetch: vi.fn() as unknown as typeof globalThis.fetch, // should be ignored
+		});
+
+		await manager.listSessions();
+
+		expect(transportFetch).toHaveBeenCalledOnce();
+	});
+
+	it("binds default fetch to globalThis via transport", async () => {
+		// Replace the global fetch with a spy that captures `this`,
+		// then create the default transport (which binds it) and
+		// verify the binding was applied.
+		let fetchThis: unknown = null;
+		globalThis.fetch = vi.fn(async function (
+			this: unknown,
+			input: RequestInfo | URL,
+			init?: RequestInit,
+		) {
+			fetchThis = this;
+			fetchCalls.push({ url: String(input), init });
+			const response = fetchQueue.shift();
+			if (!response) throw new Error("Unexpected fetch call");
+			return response;
+		}) as typeof fetch;
+
+		const transport = createBrowserTransport();
+		const manager = createRpcSessionManager({ transport });
+
+		queueJson({ id: "s3", title: "Bound", status: "idle" });
+		await manager.openSession("s3");
+
+		expect(fetchThis).toBe(globalThis);
 	});
 
 	it("maps list stream updates to session summaries", () => {
