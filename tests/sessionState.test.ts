@@ -798,28 +798,14 @@ describe("session state reducer", () => {
     expect(state.activeMessageId).toBeNull();
   });
 
-  it("hydrates messages from Pi session-file records and skips metadata records", () => {
+  it("hydrates messages from pre-normalized transcript arrays", () => {
     const state = createInitialSessionState();
 
+    // After transcript normalization, the backend supplies clean message objects
+    // with role, content, and optional id at the top level.
     hydrateSessionMessages(state, [
-      { type: "session", id: "session-1", cwd: "/tmp/project" },
-      { type: "model_change", id: "model-1", modelId: "gpt-5.5" },
-      {
-        type: "message",
-        id: "record-user-1",
-        message: {
-          role: "user",
-          content: [{ type: "text", text: "Hello" }]
-        }
-      },
-      {
-        type: "message",
-        id: "record-assistant-1",
-        message: {
-          role: "assistant",
-          content: [{ type: "text", text: "Hi there" }]
-        }
-      }
+      { id: "record-user-1", role: "user", content: [{ type: "text", text: "Hello" }] },
+      { id: "record-assistant-1", role: "assistant", content: [{ type: "text", text: "Hi there" }] },
     ]);
 
     expect(state.messages).toEqual([

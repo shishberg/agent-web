@@ -38,6 +38,18 @@ export type CreateSessionArgs = {
 
 export type SessionSnapshot = {
 	session: SessionSummary;
+	/**
+	 * Normalized transcript messages ready for UI hydration.
+	 *
+	 * Each element must be a message object with at minimum `role` and
+	 * `content` at the top level.  Session-file record envelopes
+	 * (`{ type: "message", message: { ... } }`) and non-message metadata
+	 * records (`{ type: "session" }`, `{ type: "model_change" }`) must
+	 * never cross this boundary — SessionManager implementations are
+	 * responsible for normalizing their transcripts before returning.
+	 *
+	 * Use {@link normalizeTranscript} for the standard normalization pass.
+	 */
 	messages: unknown[];
 	state?: Record<string, unknown>;
 	streamCursor: string;

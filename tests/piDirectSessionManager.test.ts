@@ -280,6 +280,51 @@ describe("PiDirectSessionManager", () => {
 				"Session not found",
 			);
 		});
+
+		it("normalizes session-file records into frontend-ready messages", async () => {
+			openSession.mockImplementation((path: string) => ({
+				buildSessionContext: () => ({
+					messages: [
+						{ type: "session", id: "s1", cwd: "/repo" },
+						{ type: "model_change", modelId: "claude" },
+						{
+							type: "message",
+							id: "rec-1",
+							message: { role: "user", content: "from " + path },
+						},
+						{
+							type: "message",
+							id: "rec-2",
+							message: { role: "assistant", content: "reply from " + path },
+						},
+					],
+					model: { provider: "anthropic", modelId: "claude" },
+				}),
+				getSessionId: () => "session-record-id",
+				getSessionFile: () => path,
+				getCwd: () => "/repo",
+				getSessionName: () => "Record session",
+				getHeader: () => ({ type: "session", id: "session-record-id" }),
+			}));
+
+			listSessions.mockResolvedValue([
+				mockPiSession(
+					"session-record-id",
+					"/tmp/pi/record.jsonl",
+					"Record",
+				),
+			]);
+
+			await manager.listSessions();
+			const snapshot = await manager.openSession("session-record-id");
+
+			// Metadata records are stripped; message records are unwrapped.
+			// Wrapper ids are preserved as fallbacks since inner messages lack them.
+			expect(snapshot.messages).toEqual([
+				{ role: "user", content: "from /tmp/pi/record.jsonl", id: "rec-1" },
+				{ role: "assistant", content: "reply from /tmp/pi/record.jsonl", id: "rec-2" },
+			]);
+		});
 	});
 
 	describe("sendMessage", () => {

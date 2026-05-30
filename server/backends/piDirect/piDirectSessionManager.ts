@@ -6,6 +6,7 @@ import {
 	type PiRunnerCoreOptions,
 } from "../../runnerCore";
 import { listPiSessions, type PiSessionSummary } from "../../piSessions";
+import { normalizeTranscript } from "../../../src/lib/transcriptNormalizer";
 import type {
 	CreateSessionArgs,
 	SessionManager,
@@ -156,7 +157,7 @@ export class PiDirectSessionManager implements SessionManager {
 
 		const persisted = this.openSessionFn(session.sessionPath, this.sessionDir);
 		const context = persisted.buildSessionContext();
-		session.messages = context.messages;
+		session.messages = normalizeTranscript(context.messages);
 		session.state = {
 			sessionId: persisted.getSessionId(),
 			sessionFile: persisted.getSessionFile(),
