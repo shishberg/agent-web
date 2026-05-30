@@ -61,10 +61,16 @@ export function piSnapshotToView(records: unknown[]): SessionView {
  *
  * Works on a shallow copy so the caller's event is never mutated.
  *
+ * @param event  Raw Pi stream event (AgentSessionEvent or Pi CLI event).
+ * @param state  Optional current SessionView for context-dependent
+ *               transitions (e.g. failure detection, fire-and-forget
+ *               guard).  When omitted the adapter uses safe defaults.
+ *
  * Callers should apply the resulting patch with {@link applyViewPatch}.
  */
 export function piStreamEventToPatch(
   event: Record<string, unknown>,
+  state?: SessionView,
 ): ViewPatch | null {
   // Normalize a shallow copy so the caller's event is not mutated
   const evt = { ...event };
@@ -133,8 +139,29 @@ export function piStreamEventToPatch(
     }
     case "agent_start":
       return { type: "setStatus", status: "running", statusText: "Agent running" };
-    case "agent_end":
+    case "agent_end": {
+      // If the agent will retry, don't change status — auto_retry_start
+      // will fire next and produce its own status patch.
+      if (evt.willRetry === true) {
+        return null;
+      }
+
+      const currentStatus = state?.status;
+
+      // If the agent end carries an explicit failure indicator, set failed.
+      if (isAgentFailure(evt, currentStatus)) {
+        const failText = agentFailureText(evt);
+        return { type: "setStatus", status: "failed", statusText: failText };
+      }
+
+      // Normal completion: transition from running → connected.
+      // Guard: don't overwrite terminal states (blocked, failed, stopped)
+      // that may have been set by extension requests or explicit stops.
+      if (currentStatus && isTerminalStatus(currentStatus)) {
+        return null;
+      }
       return { type: "setStatus", status: "connected", statusText: "Agent finished" };
+    }
     case "turn_start":
     case "turn_end":
       // Internal bookkeeping only — no view-level change.
@@ -147,8 +174,14 @@ export function piStreamEventToPatch(
         const text = stringField(params.text);
         return { type: "setExtensionDraft", text };
       }
-      // Fire-and-forget notifications: status text update only
+      // Fire-and-forget notifications: status text update only.
+      // Guard: don't clobber terminal states (blocked, failed, stopped).
       if (isFireAndForgetExtensionMethod(method)) {
+        const currentStatus = state?.status;
+        if (currentStatus && isTerminalStatus(currentStatus)) {
+          // Don't override a terminal status with a transient notification.
+          return null;
+        }
         const params = recordField(evt.params) ?? {};
         const text =
           stringField(params.statusText) ||
@@ -176,8 +209,21 @@ export function piStreamEventToPatch(
       return { type: "setStatus", status: "running", statusText: "Compaction complete" };
     case "auto_retry_start":
       return { type: "setStatus", status: "running", statusText: "Auto retry running" };
-    case "auto_retry_end":
+    case "auto_retry_end": {
+      // If the final retry exhausted all attempts, set failed.
+      if (evt.success === false) {
+        const failText =
+          stringField(evt.finalError) ||
+          stringField(evt.errorMessage) ||
+          "Auto retry failed";
+        return { type: "setStatus", status: "failed", statusText: failText };
+      }
+      // If state is already failed (e.g. from a bridge error), preserve it.
+      if (state?.status === "failed") {
+        return null;
+      }
       return { type: "setStatus", status: "running", statusText: "Auto retry finished" };
+    }
     default:
       return null;
   }
@@ -605,4 +651,105 @@ function deterministicFallbackId(prefix: string, record: Record<string, unknown>
 
 function looksLikeUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+// ── Status & failure helpers ──
+
+/**
+ * Check whether the current status is terminal — it should not be
+ * overwritten by transient status changes from fire-and-forget extension
+ * notifications or intermediate lifecycle events.
+ */
+function isTerminalStatus(status: RunStatus): boolean {
+  return status === "blocked" || status === "failed" || status === "stopped";
+}
+
+/**
+ * Detect whether the agent run ended with a failure rather than a clean
+ * completion.  Looks for:
+ * - Explicit `success: false` on the event.
+ * - Last assistant message in the transcript with stop reason `"error"` or
+ *   `"aborted"`, or with an `errorMessage` field.
+ * - Error message on the event itself.
+ */
+function isAgentFailure(
+  event: Record<string, unknown>,
+  currentStatus?: RunStatus,
+): boolean {
+  // Explicit failure flag
+  if (event.success === false) return true;
+  if (event.failed === true) return true;
+
+  // Check messages transcript for error/aborted signals.
+  // agent_end.messages is the full transcript; the relevant failure
+  // comes from the last assistant message, not necessarily the final
+  // array element (which could be a tool result).
+  const messages = Array.isArray(event.messages) ? event.messages : [];
+  const lastAssistant = getLastAssistantMessage(messages);
+  if (lastAssistant) {
+    const stopReason = stringField(lastAssistant.stopReason) || stringField(lastAssistant.stop_reason);
+    if (stopReason === "error" || stopReason === "aborted") return true;
+    if (typeof lastAssistant.errorMessage === "string" && lastAssistant.errorMessage) return true;
+  }
+
+  // Also check any message content for error tool results.
+  for (const msg of messages) {
+    if (!isRecord(msg)) continue;
+    const content = msg.content;
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        if (isRecord(block) && block.type === "tool_result" && block.is_error === true) {
+          return true;
+        }
+      }
+    }
+  }
+
+  // Error message on event
+  if (typeof event.errorMessage === "string" && event.errorMessage) return true;
+  if (typeof event.error === "string" && event.error) return true;
+
+  // If the current status was already "failed" (e.g. from a bridge error),
+  // treat the agent_end as confirming the failure.
+  if (currentStatus === "failed") return true;
+
+  return false;
+}
+
+function agentFailureText(event: Record<string, unknown>): string {
+  // Prefer explicit error message
+  const explicit = stringField(event.errorMessage) || stringField(event.error);
+  if (explicit) return explicit;
+
+  // Extract from messages: scan backward for last assistant message
+  const messages = Array.isArray(event.messages) ? event.messages : [];
+  const lastAssistant = getLastAssistantMessage(messages);
+  if (lastAssistant) {
+    const errorMsg = stringField(lastAssistant.errorMessage);
+    if (errorMsg) return errorMsg;
+
+    const stopReason = stringField(lastAssistant.stopReason) || stringField(lastAssistant.stop_reason);
+    if (stopReason === "error") return "Agent error";
+    if (stopReason === "aborted") return "Agent aborted";
+  }
+
+  return "Agent failed";
+}
+
+/**
+ * Scan the transcript backward to find the last assistant message.
+ * The last element of agent_end.messages may be a tool_result, user
+ * message, or system notice — not the assistant message that reported
+ * the failure.
+ */
+function getLastAssistantMessage(
+  messages: unknown[],
+): Record<string, unknown> | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (isRecord(msg) && msg.role === "assistant") {
+      return msg;
+    }
+  }
+  return undefined;
 }

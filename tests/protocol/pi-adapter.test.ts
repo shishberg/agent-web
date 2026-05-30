@@ -1,9 +1,25 @@
+import fs from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { piSnapshotToView, piStreamEventToPatch } from "../../src/protocol/pi-adapter";
 import { applyViewPatch } from "../../src/protocol/view-reducer";
 import { createEmptySessionView } from "../../src/protocol/types";
 import type { ConversationItem, SessionView } from "../../src/protocol/types";
 import webTestSession from "../../src/protocol/fixtures/web-test-session.json";
+
+// ── Fixture helpers ──
+
+function agentFailureFixture(): Record<string, unknown>[] {
+  const fixturePath = path.resolve(
+    __dirname,
+    "../../src/protocol/fixtures/agent-failure-stream.jsonl",
+  );
+  const raw = fs.readFileSync(fixturePath, "utf-8");
+  return raw
+    .split("\n")
+    .filter((line) => line.trim())
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
 
 // ── Snapshot adapter tests ──
 
@@ -180,13 +196,116 @@ describe("piStreamEventToPatch", () => {
     });
   });
 
-  it("returns setStatus for agent_end", () => {
+  it("returns setStatus for agent_end (normal completion)", () => {
     const patch = piStreamEventToPatch({ type: "agent_end" });
     expect(patch).toEqual({
       type: "setStatus",
       status: "connected",
       statusText: "Agent finished",
     });
+  });
+
+  it("returns null for agent_end when willRetry is true (let auto_retry_start handle it)", () => {
+    const patch = piStreamEventToPatch({
+      type: "agent_end",
+      willRetry: true,
+    });
+    expect(patch).toBeNull();
+  });
+
+  it("returns setStatus failed for agent_end with failure indicator", () => {
+    const event = {
+      type: "agent_end",
+      messages: [
+        { role: "assistant", stopReason: "error", content: [{ type: "text", text: "Failed." }] },
+      ],
+      willRetry: false,
+    };
+
+    const patch = piStreamEventToPatch(event);
+    expect(patch).toEqual({
+      type: "setStatus",
+      status: "failed",
+      statusText: "Agent error",
+    });
+  });
+
+  it("returns setStatus failed for agent_end with success:false", () => {
+    const patch = piStreamEventToPatch({
+      type: "agent_end",
+      success: false,
+      willRetry: false,
+    });
+    expect(patch).toMatchObject({
+      type: "setStatus",
+      status: "failed",
+    });
+  });
+
+  it("returns setStatus failed for agent_end with errorMessage", () => {
+    const patch = piStreamEventToPatch({
+      type: "agent_end",
+      errorMessage: "Provider rate limit exceeded",
+      willRetry: false,
+    });
+    expect(patch).toMatchObject({
+      type: "setStatus",
+      status: "failed",
+      statusText: "Provider rate limit exceeded",
+    });
+  });
+
+  it("returns setStatus failed when current state is already failed", () => {
+    const state = createEmptySessionView();
+    state.status = "failed";
+    state.statusText = "Error";
+
+    const patch = piStreamEventToPatch(
+      { type: "agent_end", willRetry: false },
+      state,
+    );
+    expect(patch).toMatchObject({
+      type: "setStatus",
+      status: "failed",
+    });
+  });
+
+  it("guards fire-and-forget notifications when status is blocked", () => {
+    const state = createEmptySessionView();
+    state.status = "blocked";
+    state.statusText = "Waiting for input";
+
+    const patch = piStreamEventToPatch(
+      {
+        type: "extension_ui_request",
+        id: "notif-1",
+        method: "setStatus",
+        params: { statusText: "Indexing" },
+      },
+      state,
+    );
+
+    // Should return null — don't clobber a terminal state at all
+    expect(patch).toBeNull();
+  });
+
+  it("guards fire-and-forget notifications when status is failed", () => {
+    const state = createEmptySessionView();
+    state.status = "failed";
+    state.statusText = "Provider rate limit exceeded";
+
+    const patch = piStreamEventToPatch(
+      {
+        type: "extension_ui_request",
+        id: "notif-1",
+        method: "notify",
+        params: { message: "Something happened" },
+      },
+      state,
+    );
+
+    // Returns null — preserves existing statusText rather than overwriting
+    expect(patch).toBeNull();
   });
 
   it("returns appendItem for message_start with id", () => {
@@ -484,6 +603,68 @@ describe("piStreamEventToPatch", () => {
     expect(end).toMatchObject({ type: "setStatus", statusText: "Auto retry finished" });
   });
 
+  it("returns failed for auto_retry_end with success:false", () => {
+    const patch = piStreamEventToPatch({
+      type: "auto_retry_end",
+      success: false,
+      finalError: "All retry attempts exhausted",
+    });
+    expect(patch).toEqual({
+      type: "setStatus",
+      status: "failed",
+      statusText: "All retry attempts exhausted",
+    });
+  });
+
+  it("returns null for auto_retry_end when state is already failed", () => {
+    const state = createEmptySessionView();
+    state.status = "failed";
+
+    const patch = piStreamEventToPatch({ type: "auto_retry_end" }, state);
+    expect(patch).toBeNull();
+  });
+
+  it("returns null for agent_end when current state is blocked", () => {
+    const state = createEmptySessionView();
+    state.status = "blocked";
+
+    const patch = piStreamEventToPatch(
+      { type: "agent_end", willRetry: false },
+      state,
+    );
+    expect(patch).toBeNull();
+  });
+
+  it("returns null for agent_end when current state is stopped", () => {
+    const state = createEmptySessionView();
+    state.status = "stopped";
+
+    const patch = piStreamEventToPatch(
+      { type: "agent_end", willRetry: false },
+      state,
+    );
+    expect(patch).toBeNull();
+  });
+
+  it("detects failure from last assistant message even when followed by non-assistant", () => {
+    // messages array ends with a tool_result, but the last assistant
+    // message (index 1) carries stopReason: "error"
+    const patch = piStreamEventToPatch({
+      type: "agent_end",
+      willRetry: false,
+      messages: [
+        { role: "user", content: "Run the command" },
+        { role: "assistant", content: "Failed.", stopReason: "error", errorMessage: "command not found" },
+        { role: "tool", result: "some output" },
+      ],
+    });
+    expect(patch).toMatchObject({
+      type: "setStatus",
+      status: "failed",
+      statusText: "command not found",
+    });
+  });
+
   it("returns null for unknown event types", () => {
     expect(piStreamEventToPatch({ type: "unknown_event" })).toBeNull();
     expect(piStreamEventToPatch({})).toBeNull();
@@ -640,7 +821,7 @@ describe("snapshot + stream integration", () => {
     ];
 
     for (const event of events) {
-      const patch = piStreamEventToPatch(event);
+      const patch = piStreamEventToPatch(event, view);
       if (patch) {
         view = applyViewPatch(view, patch);
       }
@@ -649,6 +830,67 @@ describe("snapshot + stream integration", () => {
     // No blocking requests
     expect(view.pendingRequests).toHaveLength(0);
     expect(view.status).toBe("running"); // not blocked
+  });
+
+  it("replays agent failure stream and ends with failed status", () => {
+    let view = createEmptySessionView();
+
+    // Load events from the fixture so the fixture cannot drift
+    const events = agentFailureFixture();
+
+    for (const event of events) {
+      const patch = piStreamEventToPatch(event, view);
+      if (patch) {
+        view = applyViewPatch(view, patch);
+      }
+    }
+
+    expect(view.status).toBe("failed");
+    expect(view.statusText).toBe("Agent error");
+  });
+
+  it("replays retry stream: agent_end willRetry followed by auto_retry then agent_end", () => {
+    let view = createEmptySessionView();
+
+    // agent_end with willRetry=true → null (don't change status)
+    expect(piStreamEventToPatch({ type: "agent_end", willRetry: true, messages: [] }, view)).toBeNull();
+
+    // auto_retry_start → running
+    view = applyViewPatch(view, piStreamEventToPatch({ type: "auto_retry_start" }, view)!);
+    expect(view.status).toBe("running");
+
+    // agent_end with willRetry=false → connected (no error signals)
+    view = applyViewPatch(
+      view,
+      piStreamEventToPatch({ type: "agent_end", willRetry: false, messages: [] }, view)!
+    );
+    expect(view.status).toBe("connected");
+  });
+
+  it("preserves blocked state across fire-and-forget notifications", () => {
+    let view = createEmptySessionView();
+
+    // Set up blocked state (via a dialog request)
+    view = applyViewPatch(view, {
+      type: "setPendingRequest",
+      request: { id: "confirm-1", method: "confirm", params: {} },
+    });
+    expect(view.status).toBe("blocked");
+
+    // Fire-and-forget notification now returns null for terminal states
+    const patch = piStreamEventToPatch(
+      {
+        type: "extension_ui_request",
+        id: "notif-1",
+        method: "setStatus",
+        params: { statusText: "Still processing" },
+      },
+      view,
+    );
+    expect(patch).toBeNull();
+
+    // View should be unchanged
+    expect(view.status).toBe("blocked");
   });
 });
 
