@@ -981,8 +981,6 @@ describe("session state reducer", () => {
         status: "done",
       }),
     ]);
-    expect(state.running).toBe(false);
-    expect(state.turnActive).toBe(false);
   });
 
   it("replays a complete Verandah-style id-less assistant stream with tool calls", () => {

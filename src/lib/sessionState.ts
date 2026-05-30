@@ -59,9 +59,6 @@ export type ActivityItem = {
 };
 
 export type SessionState = {
-  connected: boolean;
-  running: boolean;
-  turnActive: boolean;
   autoRetry: boolean;
   autoCompaction: boolean;
   messages: SessionMessage[];
@@ -94,9 +91,6 @@ const TOOL_LIFECYCLE_MESSAGE_PREFIX = "tool-lifecycle-message-";
 
 export function createInitialSessionState(): SessionState {
   return {
-    connected: false,
-    running: false,
-    turnActive: false,
     autoRetry: true,
     autoCompaction: true,
     messages: [],
@@ -104,7 +98,7 @@ export function createInitialSessionState(): SessionState {
     queue: [],
     activity: [],
     extensionRequests: [],
-    statusText: "Disconnected",
+    statusText: "Ready",
     activeMessageId: null
   };
 }
@@ -119,19 +113,14 @@ export function reduceSessionEvent(state: SessionState, event: PiEvent): Session
 
   switch (type) {
     case "agent_start":
-      state.running = true;
       state.statusText = "Agent running";
       break;
     case "agent_end":
-      state.running = false;
-      state.turnActive = false;
       state.statusText = "Agent finished";
       break;
     case "turn_start":
-      state.turnActive = true;
       break;
     case "turn_end":
-      state.turnActive = false;
       break;
     case "message_start": {
       const id = messageId(event);
@@ -234,6 +223,15 @@ export function acknowledgeExtensionRequest(state: SessionState, id: string): vo
   state.extensionRequests = state.extensionRequests.filter((request) => request.id !== id);
 }
 
+/**
+ * Set status text for session-level activity. Used for compaction,
+ * auto-retry, and other backend lifecycle states that don't need the
+ * full status model.
+ */
+export function setStatusText(state: SessionState, text: string): void {
+  state.statusText = text;
+}
+
 export function hydrateSessionMessages(state: SessionState, piMessages: unknown[]): SessionState {
   state.messages = [];
   piMessages.forEach((message, index) => hydrateSessionMessageIntoState(state, message, index));
@@ -242,8 +240,6 @@ export function hydrateSessionMessages(state: SessionState, piMessages: unknown[
   state.extensionRequests = [];
   state.activity = [];
   state.activeMessageId = null;
-  state.turnActive = false;
-  state.running = false;
   state.statusText = state.messages.length ? "Session loaded" : "No messages yet";
   return state;
 }

@@ -20,6 +20,19 @@ import {
   type SessionMessage,
   type SessionState
 } from "./lib/sessionState";
+import {
+  connectionLabel,
+  createInitialSessionStatus,
+  reduceSessionStatusEvent,
+  setConnected,
+  setConnecting,
+  setRunning,
+  setSessionListError,
+  setSessionListLoaded,
+  statusBadgeText,
+  statusCssClass,
+  type SessionStatusState
+} from "./lib/sessionStatus";
 
 type ThemePreference = "light" | "dark" | "system";
 type SessionRuntimeMetadata = {
@@ -33,9 +46,9 @@ const activeSessionId = ref<string | null>(null);
 const draftSessionPath = ref<string | null>(null);
 const draftTitle = ref("New chat");
 const session = reactive<SessionState>(createInitialSessionState());
+const sessionStatus = reactive<SessionStatusState>(createInitialSessionStatus());
 const prompt = ref("");
 const queueMode = ref<"steer" | "follow_up">("steer");
-const status = ref<string>("idle");
 const stderr = ref<string[]>([]);
 const extensionValue = ref("");
 const sidebarCollapsed = ref(false);
@@ -55,7 +68,6 @@ let currentSessionUnsubscribe: Unsubscribe | null = null;
 
 const activePiSession = computed(() => piSessions.value.find((item) => item.id === activeSessionId.value));
 const activeTitle = computed(() => activePiSession.value?.title ?? draftTitle.value);
-const isConnected = computed(() => session.connected);
 const canSend = computed(() => prompt.value.trim().length > 0);
 const pendingExtension = computed(() => session.extensionRequests[0]);
 const extensionOptions = computed(() => {
@@ -65,14 +77,9 @@ const extensionOptions = computed(() => {
 const extensionTitle = computed(() => stringParam("title") || pendingExtension.value?.method || "Extension request");
 const extensionMessage = computed(() => stringParam("message") || stringParam("label"));
 const extensionUsesEditor = computed(() => pendingExtension.value?.method === "input" || pendingExtension.value?.method === "editor");
-const connectionLabel = computed(() => {
-  if (status.value === "running") return "Pi running";
-  if (isConnected.value) return "Connected";
-  if (status.value === "connecting") return "Connecting";
-  if (status.value === "error") return "Error";
-  return "Disconnected";
-});
-const statusBadge = computed(() => (session.running ? "Running" : connectionLabel.value));
+const connectionLabelText = computed(() => connectionLabel(sessionStatus));
+const statusBadgeTextComputed = computed(() => statusBadgeText(sessionStatus));
+const statusClass = computed(() => statusCssClass(sessionStatus));
 const themeIcon = computed(() => ({ light: Sun, dark: Moon, system: Monitor })[themePreference.value]);
 const sidebarIcon = computed(() => (sidebarCollapsed.value ? PanelLeftOpen : PanelLeftClose));
 const nonMessageResponseIcon = computed(() => (showNonMessageResponses.value ? Eye : EyeOff));
@@ -80,7 +87,9 @@ const themeTitle = computed(() => `Theme: ${themePreference.value}`);
 const nonMessageResponseTitle = computed(() =>
   showNonMessageResponses.value ? "Hide thinking and tool calls" : "Show thinking and tool calls"
 );
-const sessionError = computed(() => (status.value === "error" ? session.statusText : ""));
+const sessionError = computed(() =>
+  sessionStatus.displayStatus === "failed" ? sessionStatus.errorMessage || sessionStatus.statusText : ""
+);
 const toolActivitySignature = computed(() =>
   session.messages
     .map((message) => message.tools.map((tool) => `${tool.key}:${tool.status}:${tool.content.length}`).join("|"))
@@ -88,7 +97,7 @@ const toolActivitySignature = computed(() =>
 );
 const sessionMetadataRows = computed(() => {
   const rows = [
-    { label: "Connection", value: connectionLabel.value },
+    { label: "Connection", value: connectionLabelText.value },
     { label: "Session", value: activeTitle.value },
     { label: "State", value: session.statusText },
     { label: "Messages", value: String(session.messages.length) }
@@ -159,13 +168,12 @@ onMounted(() => {
 
   void sessionManager.listSessions().then((sessions) => {
     piSessions.value = sessions.map(toPiSessionSummary);
-    status.value = "connected";
-    session.connected = true;
+    Object.assign(sessionStatus, setSessionListLoaded(sessionStatus));
     session.statusText = "Ready";
   }).catch((error) => {
-    status.value = "error";
-    session.connected = false;
-    session.statusText = `Failed to list sessions: ${error instanceof Error ? error.message : String(error)}`;
+    const message = error instanceof Error ? error.message : String(error);
+    Object.assign(sessionStatus, setSessionListError(sessionStatus, message));
+    session.statusText = `Failed to list sessions: ${message}`;
   });
 
   listUnsubscribe = sessionManager.subscribeToSessionList((sessions) => {
@@ -188,9 +196,8 @@ function newChat() {
   draftTitle.value = "New chat";
   clearSessionRuntime();
   hydrateSessionMessages(session, []);
-  session.connected = true;
   session.statusText = "Ready for new chat";
-  status.value = "idle";
+  Object.assign(sessionStatus, setConnected(sessionStatus, "Ready for new chat"));
 }
 
 async function selectChat(id: string) {
@@ -206,8 +213,8 @@ async function selectChat(id: string) {
   isSessionLoading.value = true;
   clearSessionRuntime();
   hydrateSessionMessages(session, []);
-  session.connected = true;
   session.statusText = "Opening session";
+  Object.assign(sessionStatus, setConnecting(sessionStatus, "Opening session"));
 
   const requestedId = id;
   try {
@@ -241,10 +248,25 @@ async function selectChat(id: string) {
       handleStreamEvent(event);
     }
 
-    session.connected = true;
+    // Derive display status from the snapshot's backend status so we
+    // don't lose stronger states (running, blocked, failed, stopped)
+    // when opening an active session.
+    Object.assign(sessionStatus, reduceSessionStatusEvent(sessionStatus, {
+      type: "session.updated",
+      eventId: "",
+      sessionId: requestedId,
+      createdAt: new Date().toISOString(),
+      payload: { session: snapshot.session },
+    }));
+
+    // Fall back to connected only when no stronger status was derived
+    // (i.e. the snapshot was idle and no pending events upgraded it).
+    if (sessionStatus.displayStatus === "connecting") {
+      Object.assign(sessionStatus, setConnected(sessionStatus));
+    }
+
     session.statusText = snapshot.messages.length ? "Session loaded" : "No messages yet";
     isSessionLoading.value = false;
-    status.value = "connected";
 
     if (snapshot.state) {
       applySessionRuntime(snapshot.state);
@@ -257,7 +279,12 @@ async function selectChat(id: string) {
     // If the user selected another chat, don't show a stale error.
     if (activeSessionId.value !== requestedId) return;
     isSessionLoading.value = false;
-    status.value = "error";
+    Object.assign(sessionStatus, reduceSessionStatusEvent(sessionStatus, {
+      type: "error",
+      eventId: "",
+      createdAt: new Date().toISOString(),
+      payload: { message: error instanceof Error ? error.message : String(error) },
+    }));
     session.statusText = `Pi request failed: ${error instanceof Error ? error.message : String(error)}`;
   }
 }
@@ -329,16 +356,22 @@ async function sendPrompt() {
       currentSessionUnsubscribe = sessionManager.subscribeToSession(sessionId, (streamEvent) => {
         handleStreamEvent(streamEvent);
       });
-      status.value = "running";
       session.statusText = "Starting Pi";
+      Object.assign(sessionStatus, setRunning(sessionStatus, "Starting Pi"));
     }
 
     await sessionManager.sendMessage(sessionId, message, {
       mode: sessionManagerMode(queueMode.value),
     });
   } catch (error) {
-    status.value = "error";
-    session.statusText = error instanceof Error ? error.message : "Failed to send message";
+    const message = error instanceof Error ? error.message : "Failed to send message";
+    Object.assign(sessionStatus, reduceSessionStatusEvent(sessionStatus, {
+      type: "error",
+      eventId: "",
+      createdAt: new Date().toISOString(),
+      payload: { message },
+    }));
+    session.statusText = message;
   } finally {
     isSending.value = false;
   }
@@ -386,21 +419,18 @@ function toPiSessionSummary(s: SessionSummary): PiSessionSummary {
 }
 
 function handleStreamEvent(event: StreamEvent): void {
+  // Delegate status derivation to the centralized status model.
+  Object.assign(sessionStatus, reduceSessionStatusEvent(sessionStatus, event));
+
   switch (event.type) {
-    case "session.updated": {
-      const summary = objectField(event.payload.session);
-      const nextStatus = typeof summary?.status === "string" ? summary.status : "";
-      applyBackendSessionStatus(nextStatus);
+    case "session.updated":
+      // Status handled by status reducer above.
       break;
-    }
     case "pi.event": {
       const piEvent = event.payload.event as Record<string, unknown> | undefined;
       if (piEvent) {
         prefillEditorPrompt(piEvent);
         reduceSessionEvent(session, piEvent);
-        if (piEvent.type === "agent_end") {
-          applyBackendSessionStatus("idle");
-        }
       }
       break;
     }
@@ -413,11 +443,6 @@ function handleStreamEvent(event: StreamEvent): void {
     }
     case "pi.status": {
       const piStatus = (event.payload.status as string) ?? "";
-      const hadError = status.value === "error";
-      status.value = hadError && piStatus === "exited" ? "error" : piStatus === "running" ? "running" : piStatus;
-      session.connected = piStatus !== "exited";
-      session.running = piStatus === "running";
-      session.statusText = hadError && piStatus === "exited" ? session.statusText : piStatus === "exited" ? "Pi exited" : `Pi ${piStatus}`;
       if (piStatus === "exited") {
         isSessionLoading.value = false;
       }
@@ -438,45 +463,13 @@ function handleStreamEvent(event: StreamEvent): void {
       break;
     }
     case "error": {
-      const message = typeof event.payload.message === "string" ? event.payload.message : "Stream error";
-      status.value = "error";
       isSessionLoading.value = false;
-      session.statusText = activePiSession.value ? `Pi request failed: ${message}` : message;
+      // Status and statusText handled by status reducer above.
       break;
     }
   }
 }
 
-function applyBackendSessionStatus(nextStatus: string): void {
-  if (nextStatus === "running") {
-    status.value = "running";
-    session.connected = true;
-    session.running = true;
-    session.statusText = "Pi running";
-    return;
-  }
-
-  if (nextStatus === "failed") {
-    status.value = "error";
-    session.connected = false;
-    session.running = false;
-    return;
-  }
-
-  if (nextStatus === "stopped") {
-    status.value = "stopped";
-    session.connected = false;
-    session.running = false;
-    session.statusText = "Pi stopped";
-    return;
-  }
-
-  if (nextStatus === "idle" || nextStatus === "blocked") {
-    status.value = "connected";
-    session.connected = true;
-    session.running = false;
-  }
-}
 
 function applyPiResponse(response: Record<string, unknown>) {
   if (response.success !== false && response.command === "get_state") {
@@ -681,7 +674,7 @@ async function scrollMessagesToEnd() {
         </button>
         <h1>{{ activeTitle }}</h1>
         <div class="status-actions">
-          <span class="status-pill" :class="status">{{ statusBadge }}</span>
+          <span class="status-pill" :class="statusClass">{{ statusBadgeTextComputed }}</span>
           <button
             class="icon-button"
             type="button"
