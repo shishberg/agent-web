@@ -9,6 +9,9 @@ import { renderMarkdown } from "./lib/markdown";
 import type { PiSessionSummary } from "./lib/rpcClient";
 import { getSessionManager } from "./lib/sessionManagerInstance";
 import type { SessionManager, SessionSummary, StreamEvent, Unsubscribe } from "./lib/sessionApi";
+import { applyViewPatch } from "./protocol/view-reducer";
+import { piStreamEventToPatch } from "./protocol/pi-adapter";
+import { createEmptySessionView, type SessionView } from "./protocol/types";
 import {
   acknowledgeExtensionRequest,
   appendLocalUserMessage,
@@ -17,6 +20,7 @@ import {
   hydrateSessionMessages,
   reduceSessionEvent,
   reduceSessionResponse,
+  reduceSessionViewPatch,
   type ExtensionRequest,
   type SessionMessage,
   type SessionState
@@ -25,6 +29,7 @@ import {
   connectionLabel,
   createInitialSessionStatus,
   reduceSessionStatusEvent,
+  reduceSessionStatusFromPatch,
   setConnected,
   setConnecting,
   setRunning,
@@ -47,6 +52,7 @@ const activeSessionId = ref<string | null>(null);
 const draftSessionPath = ref<string | null>(null);
 const draftTitle = ref("New chat");
 const session = reactive<SessionState>(createInitialSessionState());
+const sessionView = reactive<SessionView>(createEmptySessionView());
 const sessionStatus = reactive<SessionStatusState>(createInitialSessionStatus());
 const prompt = ref("");
 const queueMode = ref<"steer" | "follow_up">("steer");
@@ -162,6 +168,17 @@ watch(metadataOpen, async (open) => {
   metadataDialog.value?.focus();
 });
 
+// Prefill the prompt input when a set_editor_text extension draft arrives
+// via a ViewPatch (routed through piStreamEventToPatch).
+watch(
+  () => sessionView.extensionDraft,
+  (text) => {
+    if (text) {
+      prompt.value = text;
+    }
+  },
+);
+
 onMounted(() => {
   systemThemeQuery = window.matchMedia("(prefers-color-scheme: dark)");
   systemThemeQuery.addEventListener("change", applyTheme);
@@ -199,6 +216,7 @@ function newChat() {
   clearSessionRuntime();
   hydrateSessionMessages(session, []);
   session.statusText = "Ready for new chat";
+  Object.assign(sessionView, createEmptySessionView());
   Object.assign(sessionStatus, setConnected(sessionStatus, "Ready for new chat"));
 }
 
@@ -245,11 +263,11 @@ async function selectChat(id: string) {
 
     currentSessionUnsubscribe = unsubscribe;
 
+    // Apply the full snapshot first so pending live events see a
+    // properly initialized state when piStreamEventToPatch references
+    // sessionView for context-dependent transitions.
+    Object.assign(sessionView, snapshot.view);
     hydrateSessionFromView(session, snapshot.view);
-    hydrated = true;
-    for (const event of pending) {
-      handleStreamEvent(event);
-    }
 
     // Derive display status from the snapshot's backend status so we
     // don't lose stronger states (running, blocked, failed, stopped)
@@ -266,6 +284,12 @@ async function selectChat(id: string) {
     // (i.e. the snapshot was idle and no pending events upgraded it).
     if (sessionStatus.displayStatus === "connecting") {
       Object.assign(sessionStatus, setConnected(sessionStatus));
+    }
+
+    // Replay any pending live events on top of the initialized snapshot.
+    hydrated = true;
+    for (const event of pending) {
+      handleStreamEvent(event);
     }
 
     session.statusText = snapshot.view.items.length ? "Session loaded" : "No messages yet";
@@ -395,6 +419,20 @@ async function respondToExtension(request: ExtensionRequest, accepted: boolean) 
     }
   }
   acknowledgeExtensionRequest(session, request.id);
+  // Also clear the pending request from the SessionView so the status
+  // resolves correctly.
+  Object.assign(sessionView, applyViewPatch(sessionView, { type: "clearPendingRequest", id: request.id }));
+  if (sessionView.pendingRequests.length === 0) {
+    Object.assign(sessionStatus, {
+      ...sessionStatus,
+      displayStatus:
+        sessionStatus.displayStatus === "blocked"
+          ? sessionView.status === "running"
+            ? "running"
+            : "connected"
+          : sessionStatus.displayStatus,
+    });
+  }
   extensionValue.value = "";
 }
 
@@ -422,18 +460,48 @@ function toPiSessionSummary(s: SessionSummary): PiSessionSummary {
 }
 
 function handleStreamEvent(event: StreamEvent): void {
-  // Delegate status derivation to the centralized status model.
-  Object.assign(sessionStatus, reduceSessionStatusEvent(sessionStatus, event));
-
   switch (event.type) {
     case "session.updated":
-      // Status handled by status reducer above.
+      Object.assign(sessionStatus, reduceSessionStatusEvent(sessionStatus, event));
       break;
     case "pi.event": {
       const piEvent = event.payload.event as Record<string, unknown> | undefined;
       if (piEvent) {
-        prefillEditorPrompt(piEvent);
-        reduceSessionEvent(session, piEvent);
+        // Route through the protocol adapter to get a ViewPatch, then
+        // apply it to both the SessionView (source of truth) and the
+        // SessionState (template model).
+        const patch = piStreamEventToPatch(piEvent, sessionView);
+        if (patch) {
+          Object.assign(sessionView, applyViewPatch(sessionView, patch));
+          reduceSessionViewPatch(session, patch);
+          // Drive status from all ViewPatch types that affect it.
+          if (patch.type === "setStatus") {
+            Object.assign(sessionStatus, reduceSessionStatusFromPatch(sessionStatus, patch));
+          } else if (patch.type === "setPendingRequest") {
+            // applyViewPatch already set sessionView.status = "blocked".
+            // Reflect that in the sessionStatus model so the pill updates.
+            Object.assign(sessionStatus, {
+              ...sessionStatus,
+              displayStatus: "blocked",
+              connected: true,
+              statusText: "Waiting for input",
+            });
+          } else if (patch.type === "clearPendingRequest") {
+            // applyViewPatch already cleared the request and may have
+            // restored sessionView.status.  Sync sessionStatus to match.
+            if (sessionView.pendingRequests.length === 0) {
+              Object.assign(sessionStatus, {
+                ...sessionStatus,
+                displayStatus:
+                  sessionStatus.displayStatus === "blocked"
+                    ? sessionView.status === "running"
+                      ? "running"
+                      : "connected"
+                    : sessionStatus.displayStatus,
+              });
+            }
+          }
+        }
       }
       break;
     }
@@ -445,6 +513,7 @@ function handleStreamEvent(event: StreamEvent): void {
       break;
     }
     case "pi.status": {
+      Object.assign(sessionStatus, reduceSessionStatusEvent(sessionStatus, event));
       const piStatus = (event.payload.status as string) ?? "";
       if (piStatus === "exited") {
         isSessionLoading.value = false;
@@ -458,6 +527,7 @@ function handleStreamEvent(event: StreamEvent): void {
       break;
     }
     case "user_request.created": {
+      Object.assign(sessionStatus, reduceSessionStatusEvent(sessionStatus, event));
       const request = event.payload.request as Record<string, unknown> | undefined;
       if (request) {
         prefillEditorPrompt(request);
@@ -466,8 +536,8 @@ function handleStreamEvent(event: StreamEvent): void {
       break;
     }
     case "error": {
+      Object.assign(sessionStatus, reduceSessionStatusEvent(sessionStatus, event));
       isSessionLoading.value = false;
-      // Status and statusText handled by status reducer above.
       break;
     }
   }

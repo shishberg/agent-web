@@ -1,4 +1,4 @@
-import type { ConversationItem, ContentBlock, SessionView } from "../protocol/types";
+import type { ConversationItem, ContentBlock, SessionView, ViewPatch } from "../protocol/types";
 
 export type Role = "user" | "assistant" | "system";
 export type MessageStatus = "streaming" | "done";
@@ -1211,4 +1211,198 @@ function firstDisplayString(...values: unknown[]): string {
 
 function looksLikeUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+// ── ViewPatch-to-SessionState incremental reducer ──
+
+/**
+ * Apply a {@link ViewPatch} to a {@link SessionState}, returning the same
+ * state reference (mutated in place, consistent with the existing reducer
+ * convention).
+ *
+ * This is the incremental counterpart to {@link hydrateSessionFromView}.
+ * Call this for each ViewPatch produced by {@link piStreamEventToPatch}
+ * to keep the template-compatible {@link SessionState} in sync with the
+ * protocol {@link SessionView}.
+ */
+export function reduceSessionViewPatch(
+  state: SessionState,
+  patch: ViewPatch,
+): SessionState {
+  switch (patch.type) {
+    case "appendItem":
+      hydrateConversationItem(state, patch.item);
+      // Live-streamed assistant messages should start as "streaming" so the
+      // shimmer and streaming UI activate immediately.  Snapshot hydration
+      // (hydrateSessionFromView) sets "done" — that path is fine.
+      if (patch.item.kind === "assistant" && state.messages.length > 0) {
+        const last = state.messages[state.messages.length - 1];
+        if (last.id === patch.item.id) {
+          last.status = "streaming";
+        }
+      }
+      break;
+    case "updateItem":
+      applyItemUpdate(state, patch.id, patch.partial);
+      break;
+    case "setStatus":
+      state.statusText = patch.statusText ?? state.statusText;
+      break;
+    case "setPendingRequest": {
+      const request = patch.request;
+      state.extensionRequests.push({
+        id: request.id,
+        method: request.method,
+        params: request.params,
+      });
+      break;
+    }
+    case "clearPendingRequest":
+      acknowledgeExtensionRequest(state, patch.id);
+      break;
+    case "setExtensionDraft":
+      // Extension draft is managed at the App.vue level (prompt prefill).
+      // No SessionState change needed.
+      break;
+    case "setCursor":
+      // Cursor is a stream position concern, not a UI model concern.
+      break;
+    case "setSession":
+      // Session summary updates (title, status) are reflected via
+      // the SessionView and the status reducer.  No SessionState
+      // change needed.
+      break;
+  }
+  return state;
+}
+
+/**
+ * Apply an updateItem patch to an existing message or tool in the state.
+ */
+function applyItemUpdate(
+  state: SessionState,
+  id: string,
+  partial: Partial<ConversationItem>,
+): void {
+  const message = state.messages.find((m) => m.id === id);
+  if (!message) {
+    // May be a tool item update — tool items are attached to the last
+    // assistant message.  Find the message that owns this tool.
+    const owner = findMessageOwningTool(state, id);
+    if (owner) {
+      applyToolUpdate(owner, id, partial);
+    }
+    return;
+  }
+
+  if (partial.kind === "assistant") {
+    applyAssistantUpdate(message, partial);
+  } else if (partial.kind === "tool") {
+    applyToolUpdate(message, id, partial);
+  }
+}
+
+function applyAssistantUpdate(
+  message: SessionMessage,
+  partial: Partial<ConversationItem>,
+): void {
+  if ("content" in partial && Array.isArray(partial.content)) {
+    const extracted = extractHydratedContent(partial.content);
+    // For streaming deltas, accumulate text (mirrors mergeBlockArrays
+    // logic from the SessionView reducer).  If the incoming text already
+    // contains the existing text as a prefix, it's a full accumulated
+    // update (e.g. from message_end).  Otherwise it's a delta and we
+    // append to the existing content.
+    if (extracted.content) {
+      if (extracted.content.startsWith(message.content) && message.content) {
+        message.content = extracted.content;
+      } else {
+        message.content += extracted.content;
+      }
+    }
+    if (extracted.thinking) {
+      if (extracted.thinking.startsWith(message.thinking) && message.thinking) {
+        message.thinking = extracted.thinking;
+      } else {
+        message.thinking += extracted.thinking;
+      }
+    }
+    for (const tool of extracted.tools) {
+      mergeToolPart(message, tool);
+    }
+  }
+
+  if ("thinking" in partial && Array.isArray(partial.thinking)) {
+    const incomingThinking = contentBlockListToText(partial.thinking as ContentBlock[]);
+    if (incomingThinking.startsWith(message.thinking) && message.thinking) {
+      message.thinking = incomingThinking;
+    } else {
+      message.thinking += incomingThinking;
+    }
+  }
+}
+
+function applyToolUpdate(
+  message: SessionMessage,
+  toolId: string,
+  partial: Partial<ConversationItem>,
+): void {
+  let tool = message.tools.find((t) => t.key === toolId);
+  if (!tool) {
+    // Create a new tool part from the partial
+    if (partial.kind !== "tool") return;
+    const toolPartial = partial as { toolName?: string; toolLabel?: string; status?: string; output?: unknown; input?: unknown; detail?: string };
+    const status: MessageToolStatus =
+      toolPartial.status === "error" ? "error" :
+      toolPartial.status === "done" ? "done" : "running";
+    tool = {
+      type: "tool",
+      key: toolId,
+      id: toolId,
+      label: toolPartial.toolLabel || toolPartial.toolName || "Tool call",
+      name: toolPartial.toolName || "tool",
+      detail: toolPartial.detail,
+      status,
+      statusLabel: toolStatusLabel(status),
+      content: outputToString(toolPartial.output),
+      input: toolPartial.input,
+      output: toolPartial.output,
+    };
+    message.tools.push(tool);
+    return;
+  }
+
+  // Update existing tool
+  if (partial.kind === "tool") {
+    const toolPartial = partial as { toolName?: string; toolLabel?: string; status?: string; output?: unknown; input?: unknown; detail?: string };
+    if (toolPartial.toolName) {
+      tool.name = toolPartial.toolName;
+      tool.label = toolPartial.toolLabel || toolPartial.toolName;
+    }
+    if (toolPartial.status !== undefined) {
+      const status: MessageToolStatus =
+        toolPartial.status === "error" ? "error" :
+        toolPartial.status === "done" ? "done" : "running";
+      tool.status = status;
+      tool.statusLabel = toolStatusLabel(status);
+    }
+    if (toolPartial.output !== undefined) {
+      tool.output = toolPartial.output;
+      tool.content = outputToString(toolPartial.output);
+    }
+    if (toolPartial.input !== undefined) {
+      tool.input = toolPartial.input;
+    }
+    if (toolPartial.detail) {
+      tool.detail = toolPartial.detail;
+    }
+  }
+}
+
+/** Find the message that owns a tool with the given key. */
+function findMessageOwningTool(
+  state: Pick<SessionState, "messages">,
+  toolKey: string,
+): SessionMessage | undefined {
+  return state.messages.find((m) => m.tools.some((t) => t.key === toolKey));
 }

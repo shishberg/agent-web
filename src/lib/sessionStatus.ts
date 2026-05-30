@@ -1,4 +1,5 @@
 import type { SessionSummary, StreamEvent } from "./sessionApi";
+import type { ViewPatch } from "../protocol/types";
 
 /**
  * Canonical display status derived from backend lifecycle, runner state,
@@ -392,5 +393,82 @@ export function connectionLabel(state: SessionStatusState): string {
     case "idle":
     default:
       return state.connected ? "Connected (idle)" : "Disconnected";
+  }
+}
+
+// ── ViewPatch-driven status derivation ──
+
+/**
+ * Derive session status from a {@link ViewPatch} of type `setStatus`.
+ *
+ * Use this alongside {@link reduceSessionStatusEvent} so that the status
+ * pill, connection label, and metadata rows stay in sync when the UI
+ * applies ViewPatch deltas from {@link piStreamEventToPatch}.
+ *
+ * This function is a pure reduction — it does not mutate the input.
+ */
+export function reduceSessionStatusFromPatch(
+  state: SessionStatusState,
+  patch: ViewPatch & { type: "setStatus" },
+): SessionStatusState {
+  const status = patch.status;
+  const statusText = patch.statusText ?? state.statusText;
+
+  switch (status) {
+    case "running":
+      return {
+        ...state,
+        displayStatus: "running",
+        turnActive: true,
+        connected: true,
+        statusText,
+      };
+    case "connected":
+      return {
+        ...state,
+        displayStatus: "connected",
+        turnActive: false,
+        connected: true,
+        statusText,
+      };
+    case "connecting":
+      return {
+        ...state,
+        displayStatus: "connecting",
+        connected: true,
+        statusText,
+      };
+    case "blocked":
+      return {
+        ...state,
+        displayStatus: "blocked",
+        connected: true,
+        statusText,
+      };
+    case "failed":
+      return {
+        ...state,
+        displayStatus: "failed",
+        connected: false,
+        errorMessage: statusText.startsWith("Agent") || statusText === "Error" ? state.errorMessage : statusText,
+        statusText,
+      };
+    case "stopped":
+      return {
+        ...state,
+        displayStatus: "stopped",
+        connected: false,
+        statusText,
+      };
+    case "idle":
+      return {
+        ...state,
+        displayStatus: "connected",
+        connected: true,
+        turnActive: false,
+        statusText,
+      };
+    default:
+      return { ...state, statusText };
   }
 }
