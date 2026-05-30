@@ -8,9 +8,11 @@ export default defineConfig({
 		outDir: "dist/package",
 		emptyOutDir: true,
 		lib: {
-			entry: "src/packageEntry.ts",
+			entry: {
+				"agent-web": "src/packageEntry.ts",
+				"session-protocol": "src/sessionProtocolEntry.ts",
+			},
 			formats: ["es"],
-			fileName: () => "agent-web.js",
 		},
 		rollupOptions: {
 			external: ["vue", "@lucide/vue"],

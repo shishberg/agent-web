@@ -10,7 +10,11 @@
       "import": "./dist/package/agent-web.js"
     },
     "./style.css": "./dist/package/style.css",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./session-protocol": {
+      "types": "./dist/types/src/sessionProtocolEntry.d.ts",
+      "import": "./dist/package/session-protocol.js"
+    }
   },
   "files": [
     "dist",
@@ -29,6 +33,7 @@
     "test": "vitest run",
     "test:e2e": "playwright test",
     "test:watch": "vitest",
+    "test:package": "npm run build && tsx scripts/verify-protocol-export.ts",
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {

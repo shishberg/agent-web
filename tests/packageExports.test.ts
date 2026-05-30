@@ -20,6 +20,13 @@ describe("package entrypoint", () => {
 		});
 	});
 
+	it("declares the session-protocol export subpath", () => {
+		expect(packageJson.exports?.["./session-protocol"]).toMatchObject({
+			import: "./dist/package/session-protocol.js",
+			types: "./dist/types/src/sessionProtocolEntry.d.ts",
+		});
+	});
+
 	it("exports the Vue app and session manager API", () => {
 		expect(AgentWebApp).toBeTruthy();
 		expect(createRpcSessionManager).toBeTypeOf("function");
