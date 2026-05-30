@@ -7,6 +7,7 @@ import {
 } from "../../runnerCore";
 import { listPiSessions, type PiSessionSummary } from "../../piSessions";
 import { normalizeStreamEvent, normalizeTranscript } from "../../../src/lib/transcriptNormalizer";
+import { piSnapshotToView } from "../../../src/protocol/pi-adapter";
 import type {
 	CreateSessionArgs,
 	SessionManager,
@@ -166,9 +167,12 @@ export class PiDirectSessionManager implements SessionManager {
 			header: persisted.getHeader(),
 		};
 
+		const view = piSnapshotToView(session.messages);
+		view.session = this.toSummary(session);
+
 		return {
 			session: this.toSummary(session),
-			messages: session.messages,
+			view,
 			state: session.state,
 			streamCursor: session.streamCursor,
 			metadata: session.metadata,

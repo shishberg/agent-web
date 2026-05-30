@@ -12,6 +12,23 @@ type FetchCall = {
 };
 
 const eventSources: MockEventSource[] = [];
+
+function makeView(
+  id: string,
+  title: string,
+  status: "idle" | "running" | "blocked" | "failed" | "stopped",
+  items: Array<{ kind: string; id: string; content?: unknown; [key: string]: unknown }>,
+): Record<string, unknown> {
+  return {
+    session: { id, title, status },
+    items,
+    status,
+    statusText: "",
+    pendingRequests: [],
+    extensionDraft: null,
+    cursor: "",
+  };
+}
 let fetchCalls: FetchCall[] = [];
 let fetchQueue: Response[] = [];
 let originalFetch: typeof globalThis.fetch;
@@ -82,7 +99,7 @@ describe("RpcSessionManager", () => {
 	it("opens and deletes encoded session paths", async () => {
 		queueJson({
 			session: { id: "session/1", title: "Open", status: "running" },
-			messages: [],
+			view: makeView("session/1", "Open", "running", []),
 			streamCursor: "evt-1",
 		});
 		queueEmpty(204);
@@ -240,9 +257,12 @@ describe("RpcSessionManager", () => {
 	});
 
 	it("openAndSubscribeSession returns snapshot and wired subscription with cursor", async () => {
+		const view = makeView("session/1", "Open", "running", [
+			{ kind: "user", id: "u1", content: [{ type: "text", text: "hi" }] },
+		]);
 		queueJson({
 			session: { id: "session/1", title: "Open", status: "running" },
-			messages: [{ role: "user", content: "hi" }],
+			view,
 			streamCursor: "evt-5",
 		});
 
@@ -255,7 +275,8 @@ describe("RpcSessionManager", () => {
 		);
 
 		expect(snapshot.session.id).toBe("session/1");
-		expect(snapshot.messages).toEqual([{ role: "user", content: "hi" }]);
+		expect(snapshot.view.items).toHaveLength(1);
+		expect(snapshot.view.items[0]).toMatchObject({ kind: "user", content: [{ type: "text", text: "hi" }] });
 		expect(snapshot.streamCursor).toBe("evt-5");
 
 		// The EventSource URL includes the cursor from the snapshot.

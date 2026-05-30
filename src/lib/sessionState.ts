@@ -1,3 +1,5 @@
+import type { ConversationItem, ContentBlock, SessionView } from "../protocol/types";
+
 export type Role = "user" | "assistant" | "system";
 export type MessageStatus = "streaming" | "done";
 export type MessageToolStatus = "running" | "done" | "error";
@@ -242,6 +244,85 @@ export function hydrateSessionMessages(state: SessionState, piMessages: unknown[
   state.activeMessageId = null;
   state.statusText = state.messages.length ? "Session loaded" : "No messages yet";
   return state;
+}
+
+/**
+ * Hydrate session state from a typed SessionView.
+ *
+ * This is the primary hydration entrypoint for snapshots.  When a backend
+ * adapter returns a {@link SessionSnapshot.view}, the UI calls this function
+ * to populate the internal {@link SessionMessage} list instead of calling
+ * {@link hydrateSessionMessages} with untyped arrays.
+ */
+export function hydrateSessionFromView(state: SessionState, view: SessionView): SessionState {
+  state.messages = [];
+  state.tools = [];
+  state.queue = [];
+  state.extensionRequests = [];
+  state.activity = [];
+  state.activeMessageId = null;
+  state.statusText = view.items.length ? "Session loaded" : "No messages yet";
+
+  for (const item of view.items) {
+    hydrateConversationItem(state, item);
+  }
+
+  return state;
+}
+
+function hydrateConversationItem(state: SessionState, item: ConversationItem): void {
+  if (item.kind === "user") {
+    state.messages.push({
+      id: item.id,
+      role: "user",
+      content: contentBlockListToText(item.content),
+      thinking: "",
+      tools: [],
+      status: "done",
+    });
+  } else if (item.kind === "assistant") {
+    const extracted = extractHydratedContent(item.content);
+    if (item.thinking && item.thinking.length > 0) {
+      extracted.thinking = contentBlockListToText(item.thinking);
+    }
+    state.messages.push({
+      id: item.id,
+      role: "assistant",
+      content: extracted.content,
+      thinking: extracted.thinking,
+      tools: extracted.tools,
+      status: "done",
+    });
+  } else if (item.kind === "tool") {
+    const lastAssistant = findLastAssistantInState(state);
+    if (lastAssistant) {
+      const status: MessageToolStatus =
+        item.status === "error" ? "error" :
+        item.status === "done" ? "done" : "running";
+      lastAssistant.tools.push({
+        type: "tool",
+        key: item.id,
+        id: item.id,
+        label: item.toolLabel,
+        name: item.toolName,
+        detail: item.detail,
+        status,
+        statusLabel: toolStatusLabel(status),
+        content: outputToString(item.output),
+        input: item.input,
+        output: item.output,
+      });
+    }
+  } else if (item.kind === "notice") {
+    state.messages.push({
+      id: item.id,
+      role: "system",
+      content: item.text,
+      thinking: "",
+      tools: [],
+      status: "done",
+    });
+  }
 }
 
 export function appendLocalUserMessage(state: SessionState, content: string): SessionMessage {
@@ -1050,6 +1131,53 @@ function objectOrJsonField(value: unknown): Record<string, unknown> | undefined 
 
   const parsed = objectField(parseJson(value));
   return parsed && !Array.isArray(parsed) ? parsed : undefined;
+}
+
+// ── View hydration helpers ──
+
+/** Join ContentBlock[] into a single text string, extracting text blocks only. */
+function contentBlockListToText(blocks: ContentBlock[]): string {
+  return blocks
+    .map((block) => {
+      if (block.type === "text" && "text" in block && typeof block.text === "string") {
+        return block.text;
+      }
+      return "";
+    })
+    .join("");
+}
+
+/** Format a tool output value into a displayable string. */
+function outputToString(output: unknown): string {
+  if (typeof output === "string") return output;
+  if (output === undefined || output === null) return "";
+  // Content-block arrays: extract text fields from each block.
+  if (Array.isArray(output)) {
+    return output
+      .map((block) => {
+        if (
+          typeof block === "object" &&
+          block !== null &&
+          "text" in block &&
+          typeof (block as Record<string, unknown>).text === "string"
+        ) {
+          return (block as Record<string, unknown>).text as string;
+        }
+        return "";
+      })
+      .join("");
+  }
+  return JSON.stringify(output, null, 2);
+}
+
+/** Find the last assistant message in the state, scanning backwards. */
+function findLastAssistantInState(state: SessionState): SessionMessage | undefined {
+  for (let i = state.messages.length - 1; i >= 0; i--) {
+    if (state.messages[i].role === "assistant") {
+      return state.messages[i];
+    }
+  }
+  return undefined;
 }
 
 function firstString(...values: unknown[]): string {

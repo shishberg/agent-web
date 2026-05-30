@@ -63,7 +63,15 @@ async function setupMockManager(page: import("@playwright/test").Page) {
 				}
 				return {
 					session: { id, title: "Session " + id, status: "idle" },
-					messages: [],
+					view: {
+						session: { id, title: "Session " + id, status: "idle" },
+						items: [],
+						status: "idle",
+						statusText: "",
+						pendingRequests: [],
+						extensionDraft: null,
+						cursor: "",
+					},
 					streamCursor: "",
 				};
 			},
@@ -251,28 +259,42 @@ test("renders enriched collapsed tool call summaries", async ({ page }) => {
 				title: "Saved session",
 				status: "idle",
 			},
-			messages: [
-				{
-					id: "a1",
-					role: "assistant",
-					content: [
-						{ type: "text", text: "Done" },
-						{
-							type: "toolCall",
-							id: "call_1",
-							name: "bash",
-							arguments: { command: cmd },
-						},
-					],
+			view: {
+				session: {
+					id: "saved-1",
+					title: "Saved session",
+					status: "idle",
 				},
-				{
-					role: "toolResult",
-					toolCallId: "call_1",
-					toolName: "bash",
-					content: [{ type: "text", text: "ok" }],
-					isError: false,
-				},
-			],
+				items: [
+					{
+						kind: "assistant",
+						id: "a1",
+						content: [
+							{ type: "text", text: "Done" },
+							{
+								type: "toolCall",
+								id: "call_1",
+								name: "bash",
+								input: { command: cmd },
+							},
+						],
+					},
+					{
+						kind: "tool",
+						id: "call_1",
+						toolName: "bash",
+						toolLabel: "bash",
+						input: { command: cmd },
+						output: [{ type: "text", text: "ok" }],
+						status: "done",
+					},
+				],
+				status: "idle",
+				statusText: "Session loaded",
+				pendingRequests: [],
+				extensionDraft: null,
+				cursor: "",
+			},
 			streamCursor: "",
 		};
 	});
@@ -747,7 +769,20 @@ test("shows saved-session loading, metadata, and message copy controls", async (
 				status: "idle",
 				sessionPath: "/tmp/pi/saved-session.jsonl",
 			},
-			messages: [{ id: "a1", role: "assistant", content: "Saved **answer**" }],
+			view: {
+				session: {
+					id: "019e30bb-2c07-7633-97cf-47c7c8f8b114",
+					title: "Saved polish chat",
+					status: "idle",
+					sessionPath: "/tmp/pi/saved-session.jsonl",
+				},
+				items: [{ kind: "assistant", id: "a1", content: [{ type: "text", text: "Saved **answer**" }] }],
+				status: "idle",
+				statusText: "Session loaded",
+				pendingRequests: [],
+				extensionDraft: null,
+				cursor: "",
+			},
 			state: {
 				sessionId: "019e30bb-2c07-7633-97cf-47c7c8f8b114",
 				provider: { id: "prov-1", name: "Anthropic" },
@@ -893,7 +928,15 @@ test("message copy button reports clipboard failure", async ({ page }) => {
 		ctrl.sessions = [{ id: "copy-1", title: "Copy test", status: "idle" }];
 		ctrl.snapshots["copy-1"] = {
 			session: { id: "copy-1", title: "Copy test", status: "idle" },
-			messages: [{ id: "a1", role: "assistant", content: "Copy me" }],
+			view: {
+				session: { id: "copy-1", title: "Copy test", status: "idle" },
+				items: [{ kind: "assistant", id: "a1", content: [{ type: "text", text: "Copy me" }] }],
+				status: "idle",
+				statusText: "Session loaded",
+				pendingRequests: [],
+				extensionDraft: null,
+				cursor: "",
+			},
 			streamCursor: "",
 		};
 	});

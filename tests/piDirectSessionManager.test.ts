@@ -268,9 +268,11 @@ describe("PiDirectSessionManager", () => {
 			const snapshot = await manager.openSession("saved-session-id");
 
 			expect(snapshot.session.id).toBe("saved-session-id");
-			expect(snapshot.messages).toEqual([
-				{ role: "user", content: "hello from /tmp/pi/saved.jsonl" },
-			]);
+			expect(snapshot.view.items).toHaveLength(1);
+			expect(snapshot.view.items[0]).toMatchObject({
+				kind: "user",
+				content: [{ type: "text", text: "hello from /tmp/pi/saved.jsonl" }],
+			});
 			expect(snapshot.state).toBeDefined();
 			expect(snapshot.streamCursor).toBe("");
 		});
@@ -320,10 +322,17 @@ describe("PiDirectSessionManager", () => {
 
 			// Metadata records are stripped; message records are unwrapped.
 			// Wrapper ids are preserved as fallbacks since inner messages lack them.
-			expect(snapshot.messages).toEqual([
-				{ role: "user", content: "from /tmp/pi/record.jsonl", id: "rec-1" },
-				{ role: "assistant", content: "reply from /tmp/pi/record.jsonl", id: "rec-2" },
-			]);
+			expect(snapshot.view.items).toHaveLength(2);
+			expect(snapshot.view.items[0]).toMatchObject({
+				kind: "user",
+				id: "rec-1",
+				content: [{ type: "text", text: "from /tmp/pi/record.jsonl" }],
+			});
+			expect(snapshot.view.items[1]).toMatchObject({
+				kind: "assistant",
+				id: "rec-2",
+				content: [{ type: "text", text: "reply from /tmp/pi/record.jsonl" }],
+			});
 		});
 	});
 
@@ -796,9 +805,11 @@ describe("PiDirectSessionManager", () => {
 			);
 
 			expect(snapshot.session.id).toBe("open-sub-id");
-			expect(snapshot.messages).toEqual([
-				{ role: "user", content: "hello from /tmp/pi/open-sub.jsonl" },
-			]);
+			expect(snapshot.view.items).toHaveLength(1);
+			expect(snapshot.view.items[0]).toMatchObject({
+				kind: "user",
+				content: [{ type: "text", text: "hello from /tmp/pi/open-sub.jsonl" }],
+			});
 			expect(snapshot.streamCursor).toBe("");
 
 			// Unsubscribe is a working function.

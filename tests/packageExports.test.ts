@@ -37,7 +37,15 @@ describe("package entrypoint", () => {
 		const session: SessionSummary = { id: "s1", title: "One", status: "idle" };
 		const snapshot: SessionSnapshot = {
 			session,
-			messages: [],
+			view: {
+				session,
+				items: [],
+				status: "idle",
+				statusText: "",
+				pendingRequests: [],
+				extensionDraft: null,
+				cursor: "",
+			},
 			streamCursor: "evt-1",
 		};
 		const event: StreamEvent = {

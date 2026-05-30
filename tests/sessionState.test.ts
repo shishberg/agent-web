@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   appendLocalUserMessage,
   createInitialSessionState,
+  hydrateSessionFromView,
   hydrateSessionMessages,
   reduceSessionEvent,
   reduceSessionResponse
@@ -1104,5 +1105,134 @@ describe("session state reducer", () => {
 
     expect(state.statusText).toBe("Pi request failed: bad request");
     expect(state.activity[0]).toEqual(expect.objectContaining({ type: "response", summary: "Pi response failed: bad request" }));
+  });
+});
+
+describe("hydrateSessionFromView", () => {
+  it("hydrates a simple user message from SessionView", () => {
+    const state = createInitialSessionState();
+    const view = {
+      session: { id: "s1", title: "Test", status: "idle" as const },
+      items: [{ kind: "user" as const, id: "u1", content: [{ type: "text" as const, text: "Hello" }] }],
+      status: "idle" as const,
+      statusText: "Ready",
+      pendingRequests: [],
+      extensionDraft: null,
+      cursor: "",
+    };
+
+    hydrateSessionFromView(state, view);
+
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]).toMatchObject({
+      id: "u1",
+      role: "user",
+      content: "Hello",
+      status: "done",
+    });
+  });
+
+  it("hydrates an assistant message with text content", () => {
+    const state = createInitialSessionState();
+    const view = {
+      session: { id: "s1", title: "Test", status: "idle" as const },
+      items: [{ kind: "assistant" as const, id: "a1", content: [{ type: "text" as const, text: "Hi there" }] }],
+      status: "idle" as const,
+      statusText: "Ready",
+      pendingRequests: [],
+      extensionDraft: null,
+      cursor: "",
+    };
+
+    hydrateSessionFromView(state, view);
+
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]).toMatchObject({
+      id: "a1",
+      role: "assistant",
+      content: "Hi there",
+      status: "done",
+    });
+  });
+
+  it("hydrates a system notice message", () => {
+    const state = createInitialSessionState();
+    const view = {
+      session: { id: "s1", title: "Test", status: "idle" as const },
+      items: [{ kind: "notice" as const, id: "n1", text: "Compaction occurred", noticeType: "compaction" as const }],
+      status: "idle" as const,
+      statusText: "Ready",
+      pendingRequests: [],
+      extensionDraft: null,
+      cursor: "",
+    };
+
+    hydrateSessionFromView(state, view);
+
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]).toMatchObject({
+      id: "n1",
+      role: "system",
+      content: "Compaction occurred",
+      status: "done",
+    });
+  });
+
+  it("attaches tool items to the last assistant message", () => {
+    const state = createInitialSessionState();
+    const view = {
+      session: { id: "s1", title: "Test", status: "idle" as const },
+      items: [
+        { kind: "assistant" as const, id: "a1", content: [{ type: "text" as const, text: "Let me check" }] },
+        { kind: "tool" as const, id: "t1", toolName: "bash", toolLabel: "bash", input: { command: "ls" }, output: "file.txt", status: "done" as const },
+      ],
+      status: "idle" as const,
+      statusText: "Ready",
+      pendingRequests: [],
+      extensionDraft: null,
+      cursor: "",
+    };
+
+    hydrateSessionFromView(state, view);
+
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0].tools).toHaveLength(1);
+    expect(state.messages[0].tools[0]).toMatchObject({
+      key: "t1",
+      name: "bash",
+      status: "done",
+      content: "file.txt",
+    });
+  });
+
+  it("handles tool call blocks embedded in assistant content", () => {
+    const state = createInitialSessionState();
+    const view = {
+      session: { id: "s1", title: "Test", status: "idle" as const },
+      items: [{
+        kind: "assistant" as const,
+        id: "a1",
+        content: [
+          { type: "text" as const, text: "Running" },
+          { type: "toolCall" as const, id: "call_1", name: "bash", input: { command: "ls" } },
+        ],
+      }],
+      status: "idle" as const,
+      statusText: "Ready",
+      pendingRequests: [],
+      extensionDraft: null,
+      cursor: "",
+    };
+
+    hydrateSessionFromView(state, view);
+
+    expect(state.messages).toHaveLength(1);
+    // Tool call blocks in content create tool parts with "running" status
+    expect(state.messages[0].tools).toHaveLength(1);
+    expect(state.messages[0].tools[0]).toMatchObject({
+      key: "call_1",
+      name: "bash",
+      status: "running",
+    });
   });
 });

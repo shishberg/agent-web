@@ -325,7 +325,15 @@ function mockSessionManager(): MockSessionManager {
 			async (id: string, onEvent: (event: StreamEvent) => void) => {
 				const snapshot = await Promise.resolve({
 					session: { id, title: "Test", status: "idle" as const },
-					messages: [],
+					view: {
+						session: { id, title: "Test", status: "idle" as const },
+						items: [],
+						status: "idle" as const,
+						statusText: "",
+						pendingRequests: [],
+						extensionDraft: null,
+						cursor: "",
+					},
 					streamCursor: "evt-0",
 				});
 				sessionCallbacks.set(id, onEvent);

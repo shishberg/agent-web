@@ -11,6 +11,18 @@ import type {
 	UserRequestResponse,
 } from "../src/lib/sessionApi";
 
+function makeEmptyView(sessionId = "s1") {
+	return {
+		session: { id: sessionId, title: "", status: "idle" as const },
+		items: [],
+		status: "idle" as const,
+		statusText: "",
+		pendingRequests: [],
+		extensionDraft: null,
+		cursor: "",
+	};
+}
+
 function mockSessionManager(
 	overrides: Partial<SessionManager> = {},
 ): SessionManager {
@@ -31,7 +43,7 @@ function mockSessionManager(
 		deleteSession: vi.fn().mockResolvedValue(undefined),
 		openSession: vi.fn().mockResolvedValue({
 			session: { id: "s1", title: "", status: "idle" },
-			messages: [],
+			view: makeEmptyView(),
 			streamCursor: "",
 		}),
 		sendMessage: vi.fn().mockResolvedValue({ queued: false }),
@@ -42,7 +54,7 @@ function mockSessionManager(
 		openAndSubscribeSession: vi.fn().mockResolvedValue({
 			snapshot: {
 				session: { id: "s1", title: "", status: "idle" as const },
-				messages: [],
+				view: makeEmptyView(),
 				streamCursor: "",
 			},
 			unsubscribe: vi.fn(),
@@ -81,7 +93,7 @@ describe("SessionManager contract", () => {
 
 		const snapshot: SessionSnapshot = {
 			session: summary,
-			messages: [],
+			view: makeEmptyView("abc"),
 			streamCursor: "evt-1",
 		};
 		expect(snapshot.streamCursor).toBe("evt-1");

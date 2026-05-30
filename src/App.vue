@@ -13,6 +13,7 @@ import {
   acknowledgeExtensionRequest,
   appendLocalUserMessage,
   createInitialSessionState,
+  hydrateSessionFromView,
   hydrateSessionMessages,
   reduceSessionEvent,
   reduceSessionResponse,
@@ -244,7 +245,7 @@ async function selectChat(id: string) {
 
     currentSessionUnsubscribe = unsubscribe;
 
-    hydrateSessionMessages(session, snapshot.messages);
+    hydrateSessionFromView(session, snapshot.view);
     hydrated = true;
     for (const event of pending) {
       handleStreamEvent(event);
@@ -267,7 +268,7 @@ async function selectChat(id: string) {
       Object.assign(sessionStatus, setConnected(sessionStatus));
     }
 
-    session.statusText = snapshot.messages.length ? "Session loaded" : "No messages yet";
+    session.statusText = snapshot.view.items.length ? "Session loaded" : "No messages yet";
     isSessionLoading.value = false;
 
     if (snapshot.state) {

@@ -1,3 +1,5 @@
+import type { SessionView } from "../protocol/types";
+
 export type SessionManagerCapabilities = {
 	createSession: boolean;
 	deleteSession: boolean;
@@ -39,25 +41,20 @@ export type CreateSessionArgs = {
 export type SessionSnapshot = {
 	session: SessionSummary;
 	/**
-	 * Normalized transcript messages ready for UI hydration.
+	 * Typed session view model ready for UI hydration.
 	 *
-	 * Each element must be a message object with at minimum `role` and
-	 * `content` at the top level.  Session-file record envelopes
-	 * (`{ type: "message", message: { ... } }`) and non-message metadata
-	 * records (`{ type: "session" }`, `{ type: "model_change" }`) must
-	 * never cross this boundary — SessionManager implementations are
-	 * responsible for normalizing their transcripts before returning.
-	 *
-	 * Use {@link normalizeTranscript} for the standard normalization pass.
+	 * Produced by the backend adapter via {@link piSnapshotToView}.
+	 * The UI hydrates from this directly — no raw session-file records
+	 * or untyped message arrays should cross this boundary.
 	 */
-	messages: unknown[];
+	view: SessionView;
 	state?: Record<string, unknown>;
 	/**
 	 * Opaque stream position recorded after the last event included in this
 	 * snapshot.  Pass this value as the `cursor` option to
 	 * {@link SessionManager.subscribeToSession} so the live stream resumes
 	 * after the hydrated transcript instead of replaying events that are
-	 * already represented in `messages`.
+	 * already represented in `view`.
 	 *
 	 * An empty string means the snapshot has no stream position (e.g. the
 	 * session has never produced live events).
