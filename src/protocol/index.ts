@@ -31,3 +31,4 @@ export { createEmptySessionView } from "./types";
 export { assertNoRawPiRecords, assertValidSessionView } from "./contract";
 export { applyViewPatch } from "./view-reducer";
 export { createPiViewAdapter, piSnapshotToView, piStreamEventToPatch } from "./pi-adapter";
+export { createCsdViewAdapter, csdSnapshotToView } from "./csd-adapter";

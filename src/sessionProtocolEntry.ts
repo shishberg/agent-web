@@ -15,8 +15,10 @@ export {
   applyViewPatch,
   assertNoRawPiRecords,
   assertValidSessionView,
+  createCsdViewAdapter,
   createEmptySessionView,
   createPiViewAdapter,
+  csdSnapshotToView,
   piSnapshotToView,
   piStreamEventToPatch,
 } from "./protocol";

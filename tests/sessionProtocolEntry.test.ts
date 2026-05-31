@@ -3,7 +3,9 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	applyViewPatch,
+	createCsdViewAdapter,
 	createEmptySessionView,
+	csdSnapshotToView,
 	piSnapshotToView,
 	piStreamEventToPatch,
 } from "../src/sessionProtocolEntry";
@@ -20,6 +22,8 @@ describe("session-protocol entrypoint", () => {
 	it("exports protocol types and adapters without pulling App.vue", () => {
 		expect(applyViewPatch).toBeTypeOf("function");
 		expect(createEmptySessionView).toBeTypeOf("function");
+		expect(createCsdViewAdapter).toBeTypeOf("function");
+		expect(csdSnapshotToView).toBeTypeOf("function");
 		expect(piSnapshotToView).toBeTypeOf("function");
 		expect(piStreamEventToPatch).toBeTypeOf("function");
 	});
