@@ -450,6 +450,69 @@ test("renders streaming tool lifecycle events as styled tool details", async ({
 	);
 });
 
+test("renders Verandah streams from view.patch and ignores duplicate legacy Pi events", async ({
+	page,
+}) => {
+	await setupMockManager(page);
+	await page.goto("/");
+
+	await page.getByRole("textbox", { name: "Message prompt" }).fill("test");
+	await page.getByRole("button", { name: "Send" }).click();
+
+	await expect.poll(() => getCreatedSessions(page)).not.toHaveLength(0);
+	const sessions = await getCreatedSessions(page);
+	const sessionId = sessions[0]?.id;
+
+	await pushEvent(
+		page,
+		sessionId,
+		streamEvent("view.patch", sessionId, {
+			patches: [
+				{
+					type: "appendItem",
+					item: {
+						kind: "assistant",
+						id: "patch-assistant",
+						content: [{ type: "text", text: "Rendered from patch" }],
+					},
+				},
+				{ type: "setStatus", status: "running", statusText: "Agent running" },
+			],
+			cursor: "1",
+		}),
+	);
+
+	await expect(page.getByText("Rendered from patch")).toBeVisible();
+
+	await pushEvent(
+		page,
+		sessionId,
+		streamEvent("pi.event", sessionId, {
+			event: {
+				type: "message_start",
+				message: { id: "legacy-assistant", role: "assistant" },
+			},
+		}),
+	);
+	await pushEvent(
+		page,
+		sessionId,
+		streamEvent("pi.event", sessionId, {
+			event: {
+				type: "message_update",
+				message: { id: "legacy-assistant", role: "assistant" },
+				assistantMessageEvent: {
+					type: "text_delta",
+					delta: "Legacy duplicate",
+				},
+			},
+		}),
+	);
+
+	await expect(page.getByText("Legacy duplicate")).toHaveCount(0);
+	await expect(page.locator(".message-assistant")).toHaveCount(1);
+});
+
 test("renders streaming thinking and placeholder with the final message shape", async ({
 	page,
 }) => {

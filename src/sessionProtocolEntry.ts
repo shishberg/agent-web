@@ -16,10 +16,12 @@ export {
   assertNoRawPiRecords,
   assertValidSessionView,
   createEmptySessionView,
+  createPiViewAdapter,
   piSnapshotToView,
   piStreamEventToPatch,
 } from "./protocol";
 export type {
+  AdapterContext,
   AssistantMessageItem,
   BaseItem,
   ContentBlock,
@@ -37,4 +39,5 @@ export type {
   UserMessageItem,
   UserRequest,
   ViewPatch,
+  ViewStreamAdapter,
 } from "./protocol";

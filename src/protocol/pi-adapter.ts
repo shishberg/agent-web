@@ -6,6 +6,7 @@
  * Every other module in agent-web consumes SessionView / ViewPatch types.
  */
 import type {
+  AdapterContext,
   AssistantMessageItem,
   ContentBlock,
   ConversationItem,
@@ -16,6 +17,7 @@ import type {
   UserMessageItem,
   UserRequest,
   ViewPatch,
+  ViewStreamAdapter,
 } from "./types";
 import { createEmptySessionView } from "./types";
 
@@ -170,7 +172,7 @@ function normalizeTranscript(messages: unknown[]): unknown[] {
  * - Sets initial status to "connected" when items are present (loaded session),
  *   or "idle" when empty (new session).
  */
-export function piSnapshotToView(records: unknown[]): SessionView {
+export function piSnapshotToView(records: unknown[], context?: AdapterContext): SessionView {
   const normalized = normalizeTranscript(records);
   const items: ConversationItem[] = [];
 
@@ -182,11 +184,17 @@ export function piSnapshotToView(records: unknown[]): SessionView {
   }
 
   const session = inferSessionSummary(records);
+  if (context?.session) {
+    // Runner-provided context wins over inferred summary fields
+    if (context.session.id && !session.id) session.id = context.session.id;
+    if (context.session.title && session.title === "Loaded session") session.title = context.session.title;
+    if (context.session.status) session.status = context.session.status;
+  }
   const view = createEmptySessionView(session);
   view.items = items;
   view.status = items.length > 0 ? "connected" : "idle";
   view.statusText = items.length > 0 ? "Session loaded" : "No messages yet";
-  view.cursor = "";
+  view.cursor = context?.cursor ?? "";
 
   return view;
 }
@@ -890,4 +898,93 @@ function getLastAssistantMessage(
     }
   }
   return undefined;
+}
+
+// ── Stateful ViewStreamAdapter factory ──
+
+/**
+ * Create a stateful Pi view-stream adapter.
+ *
+ * Each stream subscription should create its own adapter instance so
+ * accumulated delta state is isolated per subscriber.
+ *
+ * The adapter wraps the stateless {@link piStreamEventToPatch} function,
+ * which already handles all the Pi → ViewPatch mapping.
+ */
+export function createPiViewAdapter(
+  initialView: SessionView,
+  context?: AdapterContext,
+): ViewStreamAdapter {
+  let view = initialView;
+
+  return {
+    toPatches(nativeEvent: unknown, ctx?: AdapterContext): ViewPatch[] {
+      if (!isRecord(nativeEvent as Record<string, unknown>)) return [];
+      const patch = piStreamEventToPatch(
+        nativeEvent as Record<string, unknown>,
+        view,
+      );
+      if (patch) {
+        view = applyPatchLocally(view, patch);
+        return [patch];
+      }
+      return [];
+    },
+  };
+}
+
+/**
+ * Local pure reducer for the adapter's internal view tracking.
+ * Duplicates the logic of {@link applyViewPatch} from view-reducer.ts
+ * rather than importing it, to keep the protocol modules free of
+ * circular dependencies.
+ */
+function applyPatchLocally(
+  view: SessionView,
+  patch: ViewPatch,
+): SessionView {
+  // The adapter only tracks top-level items and status for context;
+  // deep content merging is handled by the shared applyViewPatch in the UI.
+  // This local copy handles the surface-level state the adapter needs
+  // for subsequent event interpretation (status, pendingRequests, items).
+  switch (patch.type) {
+    case "appendItem": {
+      return {
+        ...view,
+        items: [...view.items, patch.item],
+      };
+    }
+    case "setStatus": {
+      return {
+        ...view,
+        status: patch.status,
+        statusText: patch.statusText ?? view.statusText,
+      };
+    }
+    case "setPendingRequest": {
+      return {
+        ...view,
+        pendingRequests: [...view.pendingRequests, patch.request],
+        status: "blocked",
+      };
+    }
+    case "clearPendingRequest": {
+      const pendingRequests = view.pendingRequests.filter(
+        (r) => r.id !== patch.id,
+      );
+      return {
+        ...view,
+        pendingRequests,
+        status:
+          pendingRequests.length > 0
+            ? "blocked"
+            : view.status === "blocked"
+              ? "running"
+              : view.status,
+      };
+    }
+    default: {
+      return view;
+    }
+  }
 }

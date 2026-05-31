@@ -72,6 +72,8 @@ export type StreamEventType =
 	| "session.created"
 	| "session.updated"
 	| "session.list.updated"
+	| "view.patch"
+	| "native.event"
 	| "pi.event"
 	| "pi.response"
 	| "pi.status"

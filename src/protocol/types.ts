@@ -159,6 +159,35 @@ export type ViewPatch =
   | { type: "setCursor"; cursor: string }
   | { type: "setSession"; session: SessionSummary };
 
+// ── Adapter types ──
+
+/**
+ * Context passed to snapshot and stream adapters to supply runner-level
+ * metadata that the raw native records cannot provide.
+ */
+export type AdapterContext = {
+  session?: SessionSummary;
+  cursor?: string;
+  now?: () => Date;
+};
+
+/**
+ * A stateful view-stream adapter created by a runner adapter factory.
+ *
+ * Each stream subscription should create its own adapter instance.
+ * The adapter may keep internal stream state (e.g. accumulated deltas)
+ * across calls to {@link toPatches}.
+ */
+export type ViewStreamAdapter = {
+  /**
+   * Convert one native runner event into zero or more ViewPatch values.
+   *
+   * The adapter MUST NOT mutate the incoming event object.
+   * The adapter MUST NOT perform I/O (file, network, database).
+   */
+  toPatches(nativeEvent: unknown, context?: AdapterContext): ViewPatch[];
+};
+
 // ── Factory helpers ──
 
 export function createEmptySessionView(

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { piSnapshotToView, piStreamEventToPatch } from "../../src/protocol/pi-adapter";
+import { createPiViewAdapter, piSnapshotToView, piStreamEventToPatch } from "../../src/protocol/pi-adapter";
 import { applyViewPatch } from "../../src/protocol/view-reducer";
 import { createEmptySessionView } from "../../src/protocol/types";
 import type { ConversationItem } from "../../src/protocol/types";
@@ -896,6 +896,170 @@ describe("snapshot + stream integration", () => {
 });
 
 // ── Contract validation ──
+
+describe("createPiViewAdapter", () => {
+  it("creates a stateful adapter that emits patches for agent_start", () => {
+    const adapter = createPiViewAdapter(createEmptySessionView());
+    const patches = adapter.toPatches({ type: "agent_start" });
+    expect(patches).toHaveLength(1);
+    expect(patches[0]).toMatchObject({ type: "setStatus", status: "running" });
+  });
+
+  it("tracks internal view state across calls", () => {
+    const adapter = createPiViewAdapter(createEmptySessionView());
+
+    // agent_start → running
+    let patches = adapter.toPatches({ type: "agent_start" });
+    expect(patches[0]).toMatchObject({ type: "setStatus", status: "running" });
+
+    // message_start → append item
+    patches = adapter.toPatches({
+      type: "message_start",
+      message: { id: "a1", role: "assistant" },
+    });
+    expect(patches[0]).toMatchObject({ type: "appendItem", item: { id: "a1" } });
+
+    // agent_end → connected (normal completion)
+    patches = adapter.toPatches({ type: "agent_end", willRetry: false });
+    expect(patches[0]).toMatchObject({
+      type: "setStatus",
+      status: "connected",
+    });
+  });
+
+  it("returns empty array for unknown event types", () => {
+    const adapter = createPiViewAdapter(createEmptySessionView());
+    expect(adapter.toPatches({ type: "unknown_event" })).toEqual([]);
+    expect(adapter.toPatches({})).toEqual([]);
+  });
+
+  it("preserves blocked state across fire-and-forget notifications", () => {
+    const view = createEmptySessionView();
+    view.status = "blocked";
+    view.pendingRequests = [
+      { id: "confirm-1", method: "confirm", params: {} },
+    ];
+    const adapter = createPiViewAdapter(view);
+
+    // notification should be suppressed when blocked
+    const patches = adapter.toPatches({
+      type: "extension_ui_request",
+      id: "notif-1",
+      method: "setStatus",
+      params: { statusText: "Indexing" },
+    });
+    expect(patches).toEqual([]);
+  });
+
+  it("does not mutate the caller's event object", () => {
+    const adapter = createPiViewAdapter(createEmptySessionView());
+    const event = {
+      type: "message_start",
+      message: { role: "assistant", timestamp: 1717100000001 },
+    };
+    const original = JSON.parse(JSON.stringify(event));
+    adapter.toPatches(event);
+    expect(event).toEqual(original);
+  });
+
+  it("each adapter instance has independent state", () => {
+    const adapter1 = createPiViewAdapter(createEmptySessionView());
+    const adapter2 = createPiViewAdapter(createEmptySessionView());
+
+    adapter1.toPatches({ type: "agent_start" });
+    adapter2.toPatches({ type: "agent_start" });
+
+    // adapter1's state should not affect adapter2's agent_end interpretation
+    const patches1 = adapter1.toPatches({
+      type: "agent_end",
+      willRetry: false,
+    });
+    const patches2 = adapter2.toPatches({
+      type: "agent_end",
+      willRetry: false,
+    });
+
+    expect(patches1[0]).toMatchObject({ type: "setStatus", status: "connected" });
+    expect(patches2[0]).toMatchObject({ type: "setStatus", status: "connected" });
+  });
+
+  it("handles failing agent_end", () => {
+    const adapter = createPiViewAdapter(createEmptySessionView());
+
+    adapter.toPatches({ type: "agent_start" });
+
+    const patches = adapter.toPatches({
+      type: "agent_end",
+      success: false,
+      willRetry: false,
+    });
+    expect(patches[0]).toMatchObject({ type: "setStatus", status: "failed" });
+  });
+
+  it("handles pending request and clear cycle", () => {
+    const adapter = createPiViewAdapter(createEmptySessionView());
+
+    // New extension_ui_request with confirm method sets pending
+    const patches = adapter.toPatches({
+      type: "extension_ui_request",
+      id: "req-1",
+      method: "confirm",
+      params: { title: "Approve?" },
+    });
+    expect(patches[0]).toMatchObject({
+      type: "setPendingRequest",
+      request: { id: "req-1" },
+    });
+
+    // A subsequent agent_end should be suppressed because status is blocked
+    const endPatches = adapter.toPatches({
+      type: "agent_end",
+      willRetry: false,
+    });
+    expect(endPatches).toEqual([]);
+  });
+});
+
+describe("piSnapshotToView with AdapterContext", () => {
+  it("uses context session to override inferred summary", () => {
+    const records = [
+      { role: "user", content: "Hello", id: "u1" },
+    ];
+    const view = piSnapshotToView(records, {
+      session: { id: "ctx-1", title: "From Context", status: "idle" },
+    });
+    expect(view.session.id).toBe("ctx-1");
+    expect(view.session.title).toBe("From Context");
+    expect(view.session.status).toBe("idle");
+  });
+
+  it("uses context cursor when provided", () => {
+    const view = piSnapshotToView([], { cursor: "evt-42" });
+    expect(view.cursor).toBe("evt-42");
+  });
+
+  it("context session does not override inferred id when present", () => {
+    // Records with a session metadata record provide their own id
+    const records = [
+      { type: "session", id: "from-records", title: "Records Title" },
+      { role: "user", content: "Hi", id: "u1" },
+    ];
+    const view = piSnapshotToView(records, {
+      session: { id: "ctx-id", title: "From Context", status: "idle" },
+    });
+    // The id from records wins (it's already set); title from context should not
+    // override a non-default title.
+    expect(view.session.id).toBe("from-records");
+    expect(view.session.title).toBe("Records Title");
+  });
+
+  it("omitting context works same as before", () => {
+    const view = piSnapshotToView([]);
+    expect(view.session.id).toBe("");
+    expect(view.cursor).toBe("");
+    expect(view.status).toBe("idle");
+  });
+});
 
 describe("contract validation", () => {
   it("web-test-session produces a contract-valid view", () => {

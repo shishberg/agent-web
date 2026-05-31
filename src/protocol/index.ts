@@ -7,6 +7,7 @@
  * App.vue or browser CSS.
  */
 export type {
+  AdapterContext,
   AssistantMessageItem,
   BaseItem,
   ContentBlock,
@@ -24,8 +25,9 @@ export type {
   UserMessageItem,
   UserRequest,
   ViewPatch,
+  ViewStreamAdapter,
 } from "./types";
 export { createEmptySessionView } from "./types";
 export { assertNoRawPiRecords, assertValidSessionView } from "./contract";
 export { applyViewPatch } from "./view-reducer";
-export { piSnapshotToView, piStreamEventToPatch } from "./pi-adapter";
+export { createPiViewAdapter, piSnapshotToView, piStreamEventToPatch } from "./pi-adapter";

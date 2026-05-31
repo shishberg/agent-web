@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type {
+  AdapterContext,
   AssistantMessageItem,
   ContentBlock,
   SessionView,
   UserMessageItem,
   ViewPatch,
+  ViewStreamAdapter,
 } from "../../src/protocol/types";
 import { createEmptySessionView } from "../../src/protocol/types";
 

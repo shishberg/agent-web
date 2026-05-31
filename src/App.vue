@@ -11,7 +11,7 @@ import { getSessionManager } from "./lib/sessionManagerInstance";
 import type { SessionManager, SessionSummary, StreamEvent, Unsubscribe } from "./lib/sessionApi";
 import { applyViewPatch } from "./protocol/view-reducer";
 import { piStreamEventToPatch } from "./protocol/pi-adapter";
-import { createEmptySessionView, type SessionView, type UserRequest } from "./protocol/types";
+import { createEmptySessionView, type SessionView, type UserRequest, type ViewPatch } from "./protocol/types";
 import {
   appendLocalUserMessage,
   createInitialSessionState,
@@ -68,6 +68,7 @@ const sessionRuntime = reactive<SessionRuntimeMetadata>({ provider: "", model: "
 const sessionManager = getSessionManager();
 let listUnsubscribe: Unsubscribe | null = null;
 let currentSessionUnsubscribe: Unsubscribe | null = null;
+let currentStreamUsesViewPatch = false;
 
 const activePiSession = computed(() => piSessions.value.find((item) => item.id === activeSessionId.value));
 const activeTitle = computed(() => activePiSession.value?.title ?? draftTitle.value);
@@ -206,6 +207,7 @@ function newChat() {
   currentSessionUnsubscribe = null;
   isSessionLoading.value = false;
   activeSessionId.value = null;
+  currentStreamUsesViewPatch = false;
   draftSessionPath.value = null;
   draftTitle.value = "New chat";
   prompt.value = "";
@@ -224,6 +226,7 @@ async function selectChat(id: string) {
   currentSessionUnsubscribe = null;
 
   activeSessionId.value = id;
+  currentStreamUsesViewPatch = false;
   draftSessionPath.value = null;
   draftTitle.value = item.title;
   prompt.value = "";
@@ -375,6 +378,7 @@ async function sendPrompt() {
       const draft = await sessionManager.createSession({});
       sessionId = draft.id;
       activeSessionId.value = sessionId;
+      currentStreamUsesViewPatch = false;
       currentSessionUnsubscribe?.();
       currentSessionUnsubscribe = sessionManager.subscribeToSession(sessionId, (streamEvent) => {
         handleStreamEvent(streamEvent);
@@ -454,48 +458,69 @@ function toPiSessionSummary(s: SessionSummary): PiSessionSummary {
   };
 }
 
+function applyProtocolPatch(patch: ViewPatch): void {
+  Object.assign(sessionView, applyViewPatch(sessionView, patch));
+  reduceSessionViewPatch(session, patch);
+
+  // Drive status from all ViewPatch types that affect it.
+  if (patch.type === "setStatus") {
+    Object.assign(sessionStatus, reduceSessionStatusFromPatch(sessionStatus, patch));
+  } else if (patch.type === "setPendingRequest") {
+    // applyViewPatch already set sessionView.status = "blocked".
+    // Reflect that in the sessionStatus model so the pill updates.
+    Object.assign(sessionStatus, {
+      ...sessionStatus,
+      displayStatus: "blocked",
+      connected: true,
+      statusText: "Waiting for input",
+    });
+  } else if (patch.type === "clearPendingRequest") {
+    // applyViewPatch already cleared the request and may have
+    // restored sessionView.status. Sync sessionStatus to match.
+    if (sessionView.pendingRequests.length === 0) {
+      Object.assign(sessionStatus, {
+        ...sessionStatus,
+        displayStatus:
+          sessionStatus.displayStatus === "blocked"
+            ? sessionView.status === "running"
+              ? "running"
+              : "connected"
+            : sessionStatus.displayStatus,
+      });
+    }
+  }
+}
+
+function viewPatchesFromEvent(event: StreamEvent): ViewPatch[] {
+  const patches = event.payload.patches;
+  return Array.isArray(patches) ? (patches as ViewPatch[]) : [];
+}
+
 function handleStreamEvent(event: StreamEvent): void {
   switch (event.type) {
     case "session.updated":
       Object.assign(sessionStatus, reduceSessionStatusEvent(sessionStatus, event));
       break;
+    case "view.patch": {
+      const patches = viewPatchesFromEvent(event);
+      if (patches.length > 0) {
+        currentStreamUsesViewPatch = true;
+        for (const patch of patches) {
+          applyProtocolPatch(patch);
+        }
+      }
+      break;
+    }
     case "pi.event": {
+      if (currentStreamUsesViewPatch) break;
       const piEvent = event.payload.event as Record<string, unknown> | undefined;
       if (piEvent) {
-        // Route through the protocol adapter to get a ViewPatch, then
-        // apply it to both the SessionView (source of truth) and the
-        // SessionState (template model).
+        // Direct-Pi mode still adapts native Pi events locally. Verandah-backed
+        // streams prefer view.patch and ignore legacy Pi frames to avoid double
+        // applying the same update during migration.
         const patch = piStreamEventToPatch(piEvent, sessionView);
         if (patch) {
-          Object.assign(sessionView, applyViewPatch(sessionView, patch));
-          reduceSessionViewPatch(session, patch);
-          // Drive status from all ViewPatch types that affect it.
-          if (patch.type === "setStatus") {
-            Object.assign(sessionStatus, reduceSessionStatusFromPatch(sessionStatus, patch));
-          } else if (patch.type === "setPendingRequest") {
-            // applyViewPatch already set sessionView.status = "blocked".
-            // Reflect that in the sessionStatus model so the pill updates.
-            Object.assign(sessionStatus, {
-              ...sessionStatus,
-              displayStatus: "blocked",
-              connected: true,
-              statusText: "Waiting for input",
-            });
-          } else if (patch.type === "clearPendingRequest") {
-            // applyViewPatch already cleared the request and may have
-            // restored sessionView.status.  Sync sessionStatus to match.
-            if (sessionView.pendingRequests.length === 0) {
-              Object.assign(sessionStatus, {
-                ...sessionStatus,
-                displayStatus:
-                  sessionStatus.displayStatus === "blocked"
-                    ? sessionView.status === "running"
-                      ? "running"
-                      : "connected"
-                    : sessionStatus.displayStatus,
-              });
-            }
-          }
+          applyProtocolPatch(patch);
         }
       }
       break;
