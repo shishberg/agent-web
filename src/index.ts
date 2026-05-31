@@ -4,6 +4,11 @@ export { AgentWebApp };
 export { createRpcSessionManager } from "./lib/rpcSessionManager";
 export type { RpcSessionManagerOptions } from "./lib/rpcSessionManager";
 export { createBrowserTransport } from "./lib/browserTransport";
+export {
+	resetSessionManager,
+	setSessionManager,
+} from "./lib/sessionManagerInstance";
+export type { AgentWebBrowserApi } from "./lib/sessionManagerInstance";
 export type {
 	BrowserTransport,
 	CreateBrowserTransportOptions,

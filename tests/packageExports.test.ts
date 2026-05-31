@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import packageJson from "../package.json";
-import { AgentWebApp, createRpcSessionManager } from "../src/index";
+import {
+	AgentWebApp,
+	createRpcSessionManager,
+	resetSessionManager,
+	setSessionManager,
+} from "../src/index";
 import type {
 	CreateSessionArgs,
 	PiDirectBackendOptions,
@@ -30,6 +35,8 @@ describe("package entrypoint", () => {
 	it("exports the Vue app and session manager API", () => {
 		expect(AgentWebApp).toBeTruthy();
 		expect(createRpcSessionManager).toBeTypeOf("function");
+		expect(setSessionManager).toBeTypeOf("function");
+		expect(resetSessionManager).toBeTypeOf("function");
 
 		const options: PiDirectBackendOptions = { cwd: "/tmp/agent-web" };
 		expect(options.cwd).toBe("/tmp/agent-web");

@@ -19,7 +19,7 @@ async function setupMockManager(page: import("@playwright/test").Page) {
 
 		(window as any).__mockControl__ = ctrl;
 
-		(window as any).__mockSessionManager__ = {
+		const sessionManager = {
 			capabilities: {
 				createSession: true,
 				deleteSession: false,
@@ -114,13 +114,17 @@ async function setupMockManager(page: import("@playwright/test").Page) {
 			},
 
 			openAndSubscribeSession: async (id: string, onEvent: any) => {
-				const mgr = (window as any).__mockSessionManager__;
-				const snapshot = await mgr.openSession(id);
-				const unsubscribe = mgr.subscribeToSession(id, onEvent, {
+				const snapshot = await sessionManager.openSession(id);
+				const unsubscribe = sessionManager.subscribeToSession(id, onEvent, {
 					cursor: snapshot.streamCursor,
 				});
 				return { snapshot, unsubscribe };
 			},
+		};
+
+		(window as any).__agentWeb__ = {
+			...(window as any).__agentWeb__,
+			sessionManager,
 		};
 	});
 }
