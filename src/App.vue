@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { Eye, EyeOff, Info, Moon, Monitor, PanelLeftClose, PanelLeftOpen, Plus, Sun, X } from "@lucide/vue";
+import AgentWebExtensionSlot from "./components/AgentWebExtensionSlot.vue";
 import Conversation from "./components/ai-elements/Conversation.vue";
 import Message from "./components/ai-elements/Message.vue";
 import PromptInput from "./components/ai-elements/PromptInput.vue";
@@ -714,6 +715,8 @@ async function scrollMessagesToEnd() {
         </button>
       </div>
 
+      <AgentWebExtensionSlot slot-name="sidebar.top" />
+
       <nav class="session-list" aria-label="Pi sessions">
         <button
           v-for="item in piSessions"
@@ -730,6 +733,9 @@ async function scrollMessagesToEnd() {
         </button>
         <p v-if="piSessions.length === 0" class="session-empty">No saved sessions</p>
       </nav>
+
+      <AgentWebExtensionSlot slot-name="sidebar.afterSessions" />
+      <AgentWebExtensionSlot slot-name="sidebar.bottom" />
 
       <div class="profile-row">
         <div class="avatar">U</div>
@@ -833,6 +839,7 @@ async function scrollMessagesToEnd() {
         </div>
 
         <div class="composer">
+          <AgentWebExtensionSlot slot-name="composer.before" />
           <PromptInput
             v-model="prompt"
             :send-disabled="!canSend"
@@ -866,6 +873,7 @@ async function scrollMessagesToEnd() {
             <dd>{{ row.value }}</dd>
           </template>
         </dl>
+        <AgentWebExtensionSlot slot-name="session.details" />
       </section>
     </div>
 

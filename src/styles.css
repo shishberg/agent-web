@@ -130,8 +130,8 @@ pre {
 
 .sidebar {
   min-height: 0;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   border-right: 1px solid #e5e7eb;
   background: #f8fafc;
   transition:
@@ -196,6 +196,7 @@ pre {
 
 .session-list {
   min-height: 0;
+  flex: 1 1 auto;
   overflow-y: auto;
   overflow-x: hidden;
   display: grid;
@@ -265,6 +266,71 @@ pre {
 
 :root[data-theme="dark"] .session-date {
   color: #6b7280;
+}
+
+.agent-extension-slot {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+
+.agent-extension-slot[data-extension-slot^="sidebar."] {
+  flex: 0 0 auto;
+  padding: 8px;
+}
+
+.agent-extension-slot[data-extension-slot="sidebar.top"] {
+  padding-bottom: 0;
+}
+
+.agent-extension-slot[data-extension-slot="sidebar.afterSessions"] {
+  padding-top: 0;
+}
+
+.agent-extension-slot[data-extension-slot="sidebar.bottom"] {
+  border-top: 1px solid #e5e7eb;
+}
+
+:root[data-theme="dark"] .agent-extension-slot[data-extension-slot="sidebar.bottom"] {
+  border-color: #1f2937;
+}
+
+.agent-extension-slot[data-extension-slot="composer.before"] {
+  width: min(768px, 100%);
+  margin: 0 auto;
+}
+
+.agent-extension-slot[data-extension-slot="session.details"] {
+  margin-top: 16px;
+}
+
+.agent-extension-panel {
+  min-width: 0;
+  margin: 0;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #ffffff;
+  color: #111827;
+  padding: 10px;
+}
+
+:root[data-theme="dark"] .agent-extension-panel {
+  border-color: #374151;
+  background: #1f2937;
+  color: #f9fafb;
+}
+
+.agent-extension-title {
+  margin: 0 0 8px;
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.agent-extension-panel-body {
+  min-width: 0;
 }
 
 .profile-row {
@@ -945,6 +1011,8 @@ pre {
 }
 
 .composer {
+  display: grid;
+  gap: 10px;
   border-top: 1px solid #e5e7eb;
   background: #f8fafc;
   padding: 12px 16px;

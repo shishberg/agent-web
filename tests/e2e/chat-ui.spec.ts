@@ -99,7 +99,11 @@ async function setupMockManager(page: import("@playwright/test").Page) {
 				ctrl.extensionResponses.push({ sessionId, response });
 			},
 
-			subscribeToSession: (sessionId: string, onEvent: any) => {
+			subscribeToSession: (
+				sessionId: string,
+				onEvent: any,
+				_opts?: { cursor?: string },
+			) => {
 				ctrl.sessionSubscriptions[sessionId] = onEvent;
 				return () => {
 					delete ctrl.sessionSubscriptions[sessionId];
@@ -189,6 +193,143 @@ test("loads the empty chat prompt", async ({ page }) => {
 	await expect(
 		page.getByText("Send a prompt or open a saved session."),
 	).toBeVisible();
+	await expect(page.locator("[data-extension-slot]")).toHaveCount(0);
+});
+
+test("renders registered extension panels in App layout slots", async ({
+	page,
+}) => {
+	await setupMockManager(page);
+	await page.addInitScript(() => {
+		const panels = [
+			{
+				id: "test.sidebarTop",
+				title: "Sidebar top panel",
+				slot: "sidebar.top",
+				body: "Sidebar top mounted",
+			},
+			{
+				id: "test.sidebarTop.second",
+				title: "Second top panel",
+				slot: "sidebar.top",
+				body: "Second sidebar top mounted",
+			},
+			{
+				id: "test.afterSessions",
+				title: "After sessions panel",
+				slot: "sidebar.afterSessions",
+				body: "After sessions mounted",
+			},
+			{
+				id: "test.sidebarBottom",
+				title: "Sidebar bottom panel",
+				slot: "sidebar.bottom",
+				body: "Sidebar bottom mounted",
+			},
+			{
+				id: "test.composerBefore",
+				title: "Composer before panel",
+				slot: "composer.before",
+				body: "Composer before mounted",
+			},
+			{
+				id: "test.sessionDetails",
+				title: "Session details panel",
+				slot: "session.details",
+				body: "Session details mounted",
+			},
+		];
+
+		(window as any).__agentWebExtensions__ = {
+			panels: panels.map((panel) => ({
+				id: panel.id,
+				title: panel.title,
+				slot: panel.slot,
+				mount(root: HTMLElement) {
+					root.textContent = panel.body;
+					root.dataset.mountedSlot = panel.slot;
+					return () => {
+						root.textContent = "";
+					};
+				},
+			})),
+		};
+	});
+	await page.goto("/");
+
+	await expect(
+		page.locator(
+			'[data-extension-slot="sidebar.top"] [data-panel="test.sidebarTop"]',
+		),
+	).toContainText("Sidebar top mounted");
+	await expect(
+		page.locator('[data-extension-slot="sidebar.top"] [data-panel]'),
+	).toHaveCount(2);
+	await expect(
+		page.locator(
+			'[data-extension-slot="sidebar.afterSessions"] [data-panel="test.afterSessions"]',
+		),
+	).toContainText("After sessions mounted");
+	await expect(
+		page.locator(
+			'[data-extension-slot="sidebar.bottom"] [data-panel="test.sidebarBottom"]',
+		),
+	).toContainText("Sidebar bottom mounted");
+	await expect(
+		page.locator(
+			'[data-extension-slot="composer.before"] [data-panel="test.composerBefore"]',
+		),
+	).toContainText("Composer before mounted");
+
+	await expect
+		.poll(() =>
+			page.evaluate(() => {
+				const sidebarTop = document.querySelector(
+					'[data-extension-slot="sidebar.top"]',
+				);
+				const sessionList = document.querySelector(".session-list");
+				const afterSessions = document.querySelector(
+					'[data-extension-slot="sidebar.afterSessions"]',
+				);
+				const sidebarBottom = document.querySelector(
+					'[data-extension-slot="sidebar.bottom"]',
+				);
+				const profile = document.querySelector(".profile-row");
+				const composerBefore = document.querySelector(
+					'[data-extension-slot="composer.before"]',
+				);
+				const promptInput = document.querySelector(".prompt-input");
+
+				return Boolean(
+					sidebarTop &&
+						sessionList &&
+						afterSessions &&
+						sidebarBottom &&
+						profile &&
+						composerBefore &&
+						promptInput &&
+						sidebarTop.compareDocumentPosition(sessionList) &
+							Node.DOCUMENT_POSITION_FOLLOWING &&
+						sessionList.compareDocumentPosition(afterSessions) &
+							Node.DOCUMENT_POSITION_FOLLOWING &&
+						afterSessions.compareDocumentPosition(sidebarBottom) &
+							Node.DOCUMENT_POSITION_FOLLOWING &&
+						sidebarBottom.compareDocumentPosition(profile) &
+							Node.DOCUMENT_POSITION_FOLLOWING &&
+						composerBefore.compareDocumentPosition(promptInput) &
+							Node.DOCUMENT_POSITION_FOLLOWING,
+				);
+			}),
+		)
+		.toBe(true);
+
+	await page.getByRole("button", { name: "Session details" }).click();
+	const detailsDialog = page.getByRole("dialog", { name: "Session details" });
+	await expect(
+		detailsDialog.locator(
+			'[data-extension-slot="session.details"] [data-panel="test.sessionDetails"]',
+		),
+	).toContainText("Session details mounted");
 });
 
 test("cycles the theme on the document root", async ({ page }) => {
@@ -843,7 +984,13 @@ test("shows saved-session loading, metadata, and message copy controls", async (
 					status: "idle",
 					sessionPath: "/tmp/pi/saved-session.jsonl",
 				},
-				items: [{ kind: "assistant", id: "a1", content: [{ type: "text", text: "Saved **answer**" }] }],
+				items: [
+					{
+						kind: "assistant",
+						id: "a1",
+						content: [{ type: "text", text: "Saved **answer**" }],
+					},
+				],
 				status: "idle",
 				statusText: "Session loaded",
 				pendingRequests: [],
@@ -997,7 +1144,13 @@ test("message copy button reports clipboard failure", async ({ page }) => {
 			session: { id: "copy-1", title: "Copy test", status: "idle" },
 			view: {
 				session: { id: "copy-1", title: "Copy test", status: "idle" },
-				items: [{ kind: "assistant", id: "a1", content: [{ type: "text", text: "Copy me" }] }],
+				items: [
+					{
+						kind: "assistant",
+						id: "a1",
+						content: [{ type: "text", text: "Copy me" }],
+					},
+				],
 				status: "idle",
 				statusText: "Session loaded",
 				pendingRequests: [],
