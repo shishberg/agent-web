@@ -4,7 +4,11 @@ import {
 	createBrowserTransport,
 	type BrowserTransport,
 } from "../src/lib/browserTransport";
-import type { SessionSummary, StreamEvent } from "../src/lib/sessionApi";
+import type {
+	SessionSummary,
+	StreamEvent,
+	StreamEventType,
+} from "../src/lib/sessionApi";
 
 type FetchCall = {
 	url: string;
@@ -13,21 +17,45 @@ type FetchCall = {
 
 const eventSources: MockEventSource[] = [];
 
+const SESSION_STREAM_EVENT_TYPES = [
+	"session.created",
+	"session.updated",
+	"session.list.updated",
+	"view.patch",
+	"native.event",
+	"pi.event",
+	"pi.response",
+	"pi.status",
+	"pi.stderr",
+	"user_request.created",
+	"error",
+] as const satisfies readonly StreamEventType[];
+
+type AssertNever<T extends never> = T;
+type _SessionStreamEventTypesAreExhaustive = AssertNever<
+	Exclude<StreamEventType, (typeof SESSION_STREAM_EVENT_TYPES)[number]>
+>;
+
 function makeView(
-  id: string,
-  title: string,
-  status: "idle" | "running" | "blocked" | "failed" | "stopped",
-  items: Array<{ kind: string; id: string; content?: unknown; [key: string]: unknown }>,
+	id: string,
+	title: string,
+	status: "idle" | "running" | "blocked" | "failed" | "stopped",
+	items: Array<{
+		kind: string;
+		id: string;
+		content?: unknown;
+		[key: string]: unknown;
+	}>,
 ): Record<string, unknown> {
-  return {
-    session: { id, title, status },
-    items,
-    status,
-    statusText: "",
-    pendingRequests: [],
-    extensionDraft: null,
-    cursor: "",
-  };
+	return {
+		session: { id, title, status },
+		items,
+		status,
+		statusText: "",
+		pendingRequests: [],
+		extensionDraft: null,
+		cursor: "",
+	};
 }
 let fetchCalls: FetchCall[] = [];
 let fetchQueue: Response[] = [];
@@ -234,7 +262,15 @@ describe("RpcSessionManager", () => {
 			{ cursor: "evt-1" },
 		);
 
-		expect(eventSources[0].url).toBe("/api/stream?session=session%2F1&cursor=evt-1");
+		expect(eventSources[0].url).toBe(
+			"/api/stream?session=session%2F1&cursor=evt-1",
+		);
+		expect([...eventSources[0].listeners.keys()].sort()).toEqual(
+			[...SESSION_STREAM_EVENT_TYPES].sort(),
+		);
+		expect(eventSources[0].listeners.get("view.patch")?.size).toBe(1);
+		expect(eventSources[0].listeners.get("native.event")?.size).toBe(1);
+
 		eventSources[0].dispatch("pi.event", {
 			sessionId: "session/1",
 			eventId: "evt-2",
@@ -251,6 +287,39 @@ describe("RpcSessionManager", () => {
 				payload: { event: { type: "turn_start" } },
 			},
 		]);
+
+		eventSources[0].dispatch("view.patch", {
+			sessionId: "session/1",
+			eventId: "evt-3",
+			createdAt: "2026-05-26T00:00:01.000Z",
+			payload: {
+				patches: [
+					{
+						type: "setStatus",
+						status: "running",
+						statusText: "Agent running",
+					},
+				],
+				cursor: "evt-3",
+			},
+		});
+
+		expect(events[1]).toEqual({
+			type: "view.patch",
+			sessionId: "session/1",
+			eventId: "evt-3",
+			createdAt: "2026-05-26T00:00:01.000Z",
+			payload: {
+				patches: [
+					{
+						type: "setStatus",
+						status: "running",
+						statusText: "Agent running",
+					},
+				],
+				cursor: "evt-3",
+			},
+		});
 
 		unsubscribe();
 		expect(eventSources[0].close).toHaveBeenCalledTimes(1);
@@ -276,7 +345,10 @@ describe("RpcSessionManager", () => {
 
 		expect(snapshot.session.id).toBe("session/1");
 		expect(snapshot.view.items).toHaveLength(1);
-		expect(snapshot.view.items[0]).toMatchObject({ kind: "user", content: [{ type: "text", text: "hi" }] });
+		expect(snapshot.view.items[0]).toMatchObject({
+			kind: "user",
+			content: [{ type: "text", text: "hi" }],
+		});
 		expect(snapshot.streamCursor).toBe("evt-5");
 
 		// The EventSource URL includes the cursor from the snapshot.

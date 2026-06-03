@@ -49,17 +49,24 @@ const CAPABILITIES: SessionManagerCapabilities = {
 	backgroundSessions: false,
 };
 
-const STREAM_EVENT_TYPES: StreamEventType[] = [
+const STREAM_EVENT_TYPES = [
 	"session.created",
 	"session.updated",
 	"session.list.updated",
+	"view.patch",
+	"native.event",
 	"pi.event",
 	"pi.response",
 	"pi.status",
 	"pi.stderr",
 	"user_request.created",
 	"error",
-];
+] as const satisfies readonly StreamEventType[];
+
+type AssertNever<T extends never> = T;
+type _StreamEventTypesAreExhaustive = AssertNever<
+	Exclude<StreamEventType, (typeof STREAM_EVENT_TYPES)[number]>
+>;
 
 export function createRpcSessionManager(
 	options: RpcSessionManagerOptions = {},
@@ -165,7 +172,10 @@ export class RpcSessionManager implements SessionManager {
 		opts?: { cursor?: string },
 	): Unsubscribe {
 		const source = this.transport.createEventSource(
-			this.buildUrl("/api/stream", { session: sessionId, cursor: opts?.cursor }),
+			this.buildUrl("/api/stream", {
+				session: sessionId,
+				cursor: opts?.cursor,
+			}),
 		);
 		for (const type of STREAM_EVENT_TYPES) {
 			source.addEventListener(type, (message) => {
@@ -214,7 +224,10 @@ export class RpcSessionManager implements SessionManager {
 		init: RequestInit,
 		query?: Record<string, string | undefined>,
 	): Promise<T> {
-		const response = await this.transport.fetch(this.buildUrl(path, query), init);
+		const response = await this.transport.fetch(
+			this.buildUrl(path, query),
+			init,
+		);
 		const body = await readBody(response);
 
 		if (!response.ok) {
