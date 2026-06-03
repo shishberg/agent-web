@@ -599,6 +599,9 @@ function mergeToolPart(message: Pick<SessionMessage, "tools">, incoming: Message
     return;
   }
 
+  if (incoming.key) {
+    existing.key = incoming.key;
+  }
   if (incoming.id) {
     existing.id = incoming.id;
   }
@@ -625,7 +628,74 @@ function mergeToolPart(message: Pick<SessionMessage, "tools">, incoming: Message
 }
 
 function existingToolPart(tools: MessageToolPart[], incoming: MessageToolPart): MessageToolPart | undefined {
-  return tools.find((tool) => incoming.key && tool.key === incoming.key);
+  const keyed = tools.find((tool) => incoming.key && tool.key === incoming.key);
+  if (keyed) {
+    return keyed;
+  }
+
+  // Look for a running tool with matching operation. This handles both:
+  // 1. Completed tool matching a running placeholder (terminal → running)
+  // 2. Running toolCall from message content matching a running tool from Pi adapter (running → running)
+  return tools.find((tool) => tool.status === "running" && sameToolOperation(tool, incoming));
+}
+
+function sameToolOperation(left: MessageToolPart, right: MessageToolPart): boolean {
+  const leftName = left.name && left.name !== "tool" ? left.name : left.label;
+  const rightName = right.name && right.name !== "tool" ? right.name : right.label;
+  if (leftName && rightName && leftName !== rightName) {
+    return false;
+  }
+
+  // Compare inputs first — they're the most reliable match signal.
+  const leftInput = stableToolInput(left.input ?? left.rawInput);
+  const rightInput = stableToolInput(right.input ?? right.rawInput);
+  if (leftInput && rightInput && leftInput === rightInput) {
+    return true;
+  }
+
+  // If both have non-empty inputs that differ, these are different operations.
+  if (leftInput && rightInput) {
+    return false;
+  }
+
+  // At least one input is empty. Fall back to detail matching.
+  // Allow partial matches: one detail may contain the other (e.g.
+  // Pi adapter adds a "bash: " prefix that the LLM toolCall doesn't have).
+  if (left.detail && right.detail) {
+    return left.detail === right.detail
+      || left.detail.includes(right.detail)
+      || right.detail.includes(left.detail);
+  }
+
+  // No conflicting inputs or details — treat as the same tool.
+  return true;
+}
+
+function stableToolInput(value: unknown): string {
+  if (value === undefined || value === null) {
+    return "";
+  }
+
+  try {
+    return JSON.stringify(value, sortedJsonReplacer);
+  } catch {
+    return "";
+  }
+}
+
+function sortedJsonReplacer(_key: string, value: unknown): unknown {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).sort(([left], [right]) =>
+        left.localeCompare(right),
+      ),
+    );
+  }
+  return value;
+}
+
+function isTerminalToolStatus(status: MessageToolStatus): boolean {
+  return status === "done" || status === "error";
 }
 
 function toolPartFromExecutionEvent(event: PiEvent, status: MessageToolStatus, key = executionToolId(event)): MessageToolPart {
@@ -1247,6 +1317,9 @@ export function reduceSessionViewPatch(
       break;
     case "setStatus":
       state.statusText = patch.statusText ?? state.statusText;
+      if (isFinishedRunStatus(patch.status)) {
+        finishStreamingMessages(state);
+      }
       break;
     case "setPendingRequest": {
       const request = patch.request;
@@ -1302,10 +1375,25 @@ function applyItemUpdate(
   }
 }
 
+function finishStreamingMessages(state: Pick<SessionState, "messages" | "activeMessageId">): void {
+  for (const message of state.messages) {
+    if (message.status === "streaming") {
+      message.status = "done";
+    }
+  }
+  state.activeMessageId = null;
+}
+
+function isFinishedRunStatus(status: string): boolean {
+  return status !== "running" && status !== "connecting";
+}
+
 function applyAssistantUpdate(
   message: SessionMessage,
   partial: Partial<ConversationItem>,
 ): void {
+  let sawTerminalTool = false;
+
   if ("content" in partial && Array.isArray(partial.content)) {
     const extracted = extractHydratedContent(partial.content);
     // For streaming deltas, accumulate text (mirrors mergeBlockArrays
@@ -1329,6 +1417,9 @@ function applyAssistantUpdate(
     }
     for (const tool of extracted.tools) {
       mergeToolPart(message, tool);
+      if (isTerminalToolStatus(tool.status)) {
+        sawTerminalTool = true;
+      }
     }
   }
 
@@ -1340,6 +1431,10 @@ function applyAssistantUpdate(
       message.thinking += incomingThinking;
     }
   }
+
+  if (sawTerminalTool && !message.content) {
+    message.status = "done";
+  }
 }
 
 function applyToolUpdate(
@@ -1347,56 +1442,44 @@ function applyToolUpdate(
   toolId: string,
   partial: Partial<ConversationItem>,
 ): void {
-  let tool = message.tools.find((t) => t.key === toolId);
-  if (!tool) {
-    // Create a new tool part from the partial
-    if (partial.kind !== "tool") return;
-    const toolPartial = partial as { toolName?: string; toolLabel?: string; status?: string; output?: unknown; input?: unknown; detail?: string };
-    const status: MessageToolStatus =
-      toolPartial.status === "error" ? "error" :
-      toolPartial.status === "done" ? "done" : "running";
-    tool = {
-      type: "tool",
-      key: toolId,
-      id: toolId,
-      label: toolPartial.toolLabel || toolPartial.toolName || "Tool call",
-      name: toolPartial.toolName || "tool",
-      detail: toolPartial.detail,
-      status,
-      statusLabel: toolStatusLabel(status),
-      content: outputToString(toolPartial.output),
-      input: toolPartial.input,
-      output: toolPartial.output,
-    };
-    message.tools.push(tool);
-    return;
-  }
+  if (partial.kind !== "tool") return;
 
-  // Update existing tool
-  if (partial.kind === "tool") {
-    const toolPartial = partial as { toolName?: string; toolLabel?: string; status?: string; output?: unknown; input?: unknown; detail?: string };
-    if (toolPartial.toolName) {
-      tool.name = toolPartial.toolName;
-      tool.label = toolPartial.toolLabel || toolPartial.toolName;
-    }
-    if (toolPartial.status !== undefined) {
-      const status: MessageToolStatus =
-        toolPartial.status === "error" ? "error" :
-        toolPartial.status === "done" ? "done" : "running";
-      tool.status = status;
-      tool.statusLabel = toolStatusLabel(status);
-    }
-    if (toolPartial.output !== undefined) {
-      tool.output = toolPartial.output;
-      tool.content = outputToString(toolPartial.output);
-    }
-    if (toolPartial.input !== undefined) {
-      tool.input = toolPartial.input;
-    }
-    if (toolPartial.detail) {
-      tool.detail = toolPartial.detail;
-    }
+  const incoming = toolPartFromPatch(toolId, partial);
+  mergeToolPart(message, incoming);
+  if (isTerminalToolStatus(incoming.status) && !message.content) {
+    message.status = "done";
   }
+}
+
+function toolPartFromPatch(
+  toolId: string,
+  partial: Partial<ConversationItem>,
+): MessageToolPart {
+  const toolPartial = partial as {
+    toolName?: string;
+    toolLabel?: string;
+    status?: string;
+    output?: unknown;
+    input?: unknown;
+    detail?: string;
+  };
+  const status: MessageToolStatus =
+    toolPartial.status === "error" ? "error" :
+    toolPartial.status === "done" ? "done" : "running";
+
+  return {
+    type: "tool",
+    key: toolId,
+    id: toolId,
+    label: toolPartial.toolLabel || toolPartial.toolName || "Tool call",
+    name: toolPartial.toolName || "tool",
+    detail: toolPartial.detail,
+    status,
+    statusLabel: toolStatusLabel(status),
+    content: outputToString(toolPartial.output),
+    input: toolPartial.input,
+    output: toolPartial.output,
+  };
 }
 
 /** Find the message that owns a tool with the given key. */
