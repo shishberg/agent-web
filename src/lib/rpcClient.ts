@@ -7,6 +7,7 @@ export type PiSessionSummary = {
   path: string;
   cwd?: string;
   title: string;
+  status?: string;
   created?: string;
   modified?: string;
   messageCount?: number;

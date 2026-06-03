@@ -238,11 +238,60 @@ pre {
 }
 
 .session-date {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 5px;
   color: #6b7280;
   font-size: 12px;
   font-weight: 400;
   line-height: 1.2;
+}
+
+.session-status-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+}
+
+.session-status-dot.idle {
+  background: #d1d5db;
+}
+
+.session-status-dot.running {
+  background: #f59e0b;
+}
+
+.session-status-dot.blocked {
+  background: #f59e0b;
+}
+
+.session-status-dot.error {
+  background: #ef4444;
+}
+
+.session-status-dot.stopped {
+  background: #9ca3af;
+}
+
+:root[data-theme="dark"] .session-status-dot.idle {
+  background: #4b5563;
+}
+
+:root[data-theme="dark"] .session-status-dot.running {
+  background: #fbbf24;
+}
+
+:root[data-theme="dark"] .session-status-dot.blocked {
+  background: #fbbf24;
+}
+
+:root[data-theme="dark"] .session-status-dot.error {
+  background: #ef4444;
+}
+
+:root[data-theme="dark"] .session-status-dot.stopped {
+  background: #6b7280;
 }
 
 .session-empty {

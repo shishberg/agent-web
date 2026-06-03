@@ -52,7 +52,7 @@ const session = reactive<SessionState>(createInitialSessionState());
 const sessionView = reactive<SessionView>(createEmptySessionView());
 const sessionStatus = reactive<SessionStatusState>(createInitialSessionStatus());
 const prompt = ref("");
-const queueMode = ref<"steer" | "follow_up">("steer");
+const queueMode = ref<"steer" | "follow_up">("follow_up");
 const stderr = ref<string[]>([]);
 const extensionValue = ref("");
 const sidebarCollapsed = ref(false);
@@ -452,6 +452,7 @@ function toPiSessionSummary(s: SessionSummary): PiSessionSummary {
     path: s.sessionPath ?? "",
     cwd: typeof metadata?.cwd === "string" ? metadata.cwd : undefined,
     title: s.title,
+    status: s.status,
     created: s.createdAt,
     modified: s.updatedAt,
     messageCount: typeof metadata?.messageCount === "number" ? metadata.messageCount : undefined,
@@ -637,6 +638,21 @@ function sessionPrompt(item: PiSessionSummary): string {
   return (item.firstMessage || item.title).replace(/\s+/g, " ").trim() || "Untitled session";
 }
 
+function sessionStatusCssClass(status: string | undefined): string {
+  switch (status) {
+    case "running":
+      return "running";
+    case "failed":
+      return "error";
+    case "blocked":
+      return "blocked";
+    case "stopped":
+      return "stopped";
+    default:
+      return "idle";
+  }
+}
+
 function formatSessionTimestamp(item: PiSessionSummary): string {
   const timestamp = item.modified || item.created;
   if (!timestamp) return "";
@@ -729,7 +745,7 @@ async function scrollMessagesToEnd() {
           @click="selectChat(item.id)"
         >
           <span class="session-prompt" :title="sessionPrompt(item)">{{ sessionPrompt(item) }}</span>
-          <span class="session-date">{{ formatSessionTimestamp(item) }}</span>
+          <span class="session-date"><span class="session-status-dot" :class="sessionStatusCssClass(item.status)"></span>{{ formatSessionTimestamp(item) }}</span>
         </button>
         <p v-if="piSessions.length === 0" class="session-empty">No saved sessions</p>
       </nav>
