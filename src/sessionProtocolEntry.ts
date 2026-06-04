@@ -25,6 +25,7 @@ export {
 export type {
   AdapterContext,
   AssistantMessageItem,
+  AssistantToolPart,
   BaseItem,
   ContentBlock,
   ConversationItem,

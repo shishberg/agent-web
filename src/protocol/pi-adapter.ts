@@ -8,18 +8,19 @@
 import type {
   AdapterContext,
   AssistantMessageItem,
+  AssistantToolPart,
   ContentBlock,
   ConversationItem,
   RunStatus,
   SessionSummary,
   SessionView,
-  ToolItem,
   UserMessageItem,
   UserRequest,
   ViewPatch,
   ViewStreamAdapter,
 } from "./types";
 import { createEmptySessionView } from "./types";
+import { applyViewPatch } from "./view-reducer";
 
 // ═══════════════════════════════════════════════════════════════════════
 // Transcript normalization (Pi session-file ↔ frontend message shapes)
@@ -177,6 +178,11 @@ export function piSnapshotToView(records: unknown[], context?: AdapterContext): 
   const items: ConversationItem[] = [];
 
   for (const record of normalized) {
+    if (isToolResultMessage(record)) {
+      attachToolResultToAssistant(items, record);
+      continue;
+    }
+
     const convItem = toConversationItem(record);
     if (convItem) {
       items.push(convItem);
@@ -250,6 +256,12 @@ export function piStreamEventToPatch(
 
       const id = messageIdFromEvent(evt);
       if (!id) return null;
+
+      const toolCall = assistantToolFromToolCallEndEvent(evt);
+      if (toolCall) {
+        return { type: "upsertAssistantTool", assistantId: id, tool: toolCall };
+      }
+
       const convItem = toConversationItem(msg);
       if (!convItem) return null;
       return { type: "updateItem", id, partial: convItem };
@@ -263,26 +275,12 @@ export function piStreamEventToPatch(
       if (!convItem) return null;
       return { type: "updateItem", id, partial: { ...convItem } };
     }
-    case "tool_execution_start": {
-      const toolItem = toToolItem(evt, "running");
-      if (!toolItem) return null;
-      return { type: "appendItem", item: toolItem };
-    }
-    case "tool_execution_update": {
-      const id = executionToolId(evt);
-      if (!id) return null;
-      const partial = toolEndPartial(evt, "running");
-      if (!partial) return null;
-      return { type: "updateItem", id, partial };
-    }
-    case "tool_execution_end": {
-      const id = executionToolId(evt);
-      if (!id) return null;
-      const status = isToolError(evt) ? "error" : "done";
-      const partial = toolEndPartial(evt, status as ToolItem["status"]);
-      if (!partial) return null;
-      return { type: "updateItem", id, partial };
-    }
+    case "tool_execution_start":
+      return toolExecutionPatch(evt, state, "running");
+    case "tool_execution_update":
+      return toolExecutionPatch(evt, state, "running");
+    case "tool_execution_end":
+      return toolExecutionPatch(evt, state, isToolError(evt) ? "error" : "done");
     case "agent_start":
       return { type: "setStatus", status: "running", statusText: "Agent running" };
     case "agent_end": {
@@ -316,7 +314,7 @@ export function piStreamEventToPatch(
       const method = String(evt.method ?? "");
       // set_editor_text is a draft update, not a generic fire-and-forget
       if (method === "set_editor_text") {
-        const params = recordField(evt.params) ?? {};
+        const params = extensionParams(evt);
         const text = stringField(params.text);
         return { type: "setExtensionDraft", text };
       }
@@ -328,7 +326,7 @@ export function piStreamEventToPatch(
           // Don't override a terminal status with a transient notification.
           return null;
         }
-        const params = recordField(evt.params) ?? {};
+        const params = extensionParams(evt);
         const text =
           stringField(params.statusText) ||
           stringField(params.message) ||
@@ -346,7 +344,8 @@ export function piStreamEventToPatch(
       return { type: "setPendingRequest", request };
     }
     case "set_editor_text": {
-      const text = stringField(evt.text) || stringField(evt.params) || "";
+      const params = extensionParams(evt);
+      const text = stringField(params.text) || stringField(evt.params) || "";
       return { type: "setExtensionDraft", text };
     }
     case "compaction_start":
@@ -403,13 +402,14 @@ function toConversationItem(value: unknown): ConversationItem | null {
   }
 
   if (role === "assistant") {
-    const { content, thinking } = extractAssistantContent(value);
+    const { content, thinking, tools } = extractAssistantContent(value);
     return {
       id,
       timestamp,
       kind: "assistant",
       content,
       thinking: thinking.length > 0 ? thinking : undefined,
+      tools: tools.length > 0 ? tools : undefined,
       provider: stringField(value.provider) || undefined,
       model: stringField(value.model) || undefined,
       usage: recordField(value.usage) as AssistantMessageItem["usage"] | undefined,
@@ -420,66 +420,61 @@ function toConversationItem(value: unknown): ConversationItem | null {
   return null;
 }
 
-function toToolItem(
+function toolExecutionPatch(
   event: Record<string, unknown>,
-  status: ToolItem["status"],
-): ToolItem | null {
+  state: SessionView | undefined,
+  status: AssistantToolPart["status"],
+): ViewPatch | null {
   const id = executionToolId(event);
-  if (!id) return null;
+  if (!id || !state) return null;
 
-  const name = toolName(event);
-  const output = event.output ?? event.result ?? event.partialResult ?? event.delta ?? event.message;
-  const outputContent = textFromToolPayload(output);
+  const assistantId = assistantIdForToolCall(state, id);
+  if (!assistantId) return null;
 
   return {
-    id,
-    kind: "tool",
-    toolName: name || "tool",
-    toolLabel: name || "Tool call",
-    detail: toolDetail(event) || undefined,
-    input: event.input ?? event.args ?? recordField(event.arguments) ?? recordField(event.tool)?.input ?? recordField(event.tool)?.args,
-    output,
-    status,
-  } satisfies ToolItem;
+    type: "upsertAssistantTool",
+    assistantId,
+    tool: assistantToolFromExecutionEvent(event, status, id),
+  };
 }
 
-/**
- * Build a partial tool item for update patches (tool_execution_update / tool_execution_end).
- * Only includes fields that the event actually carries, so existing fields on the item
- * (like toolName from the start event) are not overwritten with empty values.
- */
-function toolEndPartial(
-  event: Record<string, unknown>,
-  status: ToolItem["status"],
-): Partial<ToolItem> | null {
-  const id = executionToolId(event);
-  if (!id) return null;
+function assistantIdForToolCall(view: SessionView, toolCallId: string): string {
+  for (let index = view.items.length - 1; index >= 0; index -= 1) {
+    const item = view.items[index];
+    if (item.kind === "assistant" && item.tools?.some((tool) => tool.id === toolCallId)) {
+      return item.id;
+    }
+  }
+  return "";
+}
 
+function assistantToolFromExecutionEvent(
+  event: Record<string, unknown>,
+  status: AssistantToolPart["status"],
+  id = executionToolId(event),
+): Partial<AssistantToolPart> & { id: string } {
   const name = toolName(event);
   const output = event.output ?? event.result ?? event.partialResult ?? event.delta ?? event.message;
-
-  const partial: Partial<ToolItem> = {
-    kind: "tool",
-    status,
-  };
+  const input = toolInput(event);
+  const detail = toolDetail(event);
+  const tool: Partial<AssistantToolPart> & { id: string } = { id, status };
 
   if (name) {
-    partial.toolName = name;
-    partial.toolLabel = name;
+    tool.name = name;
+    tool.label = name;
+  }
+  if (input !== undefined) {
+    tool.input = input;
+  }
+  if (detail) {
+    tool.detail = detail;
   }
   if (output !== undefined) {
-    partial.output = output;
-  }
-  const detail = toolDetail(event);
-  if (detail) {
-    partial.detail = detail;
-  }
-  const input = event.input ?? event.args ?? recordField(event.arguments) ?? recordField(event.tool)?.input ?? recordField(event.tool)?.args;
-  if (input !== undefined) {
-    partial.input = input;
+    tool.output = output;
+    tool.content = textFromToolPayload(output) || stringField(output);
   }
 
-  return partial;
+  return tool;
 }
 
 // ── Content extraction helpers ──
@@ -497,22 +492,32 @@ function contentToBlocks(content: unknown): ContentBlock[] {
 function extractAssistantContent(value: Record<string, unknown>): {
   content: ContentBlock[];
   thinking: ContentBlock[];
+  tools: AssistantToolPart[];
 } {
   const rawContent = value.content;
 
   if (typeof rawContent === "string") {
-    return { content: [{ type: "text", text: rawContent }], thinking: [] };
+    return { content: [{ type: "text", text: rawContent }], thinking: [], tools: [] };
   }
 
   if (!Array.isArray(rawContent)) {
-    return { content: [], thinking: [] };
+    return { content: [], thinking: [], tools: [] };
   }
 
   const content: ContentBlock[] = [];
   const thinking: ContentBlock[] = [];
+  const tools: AssistantToolPart[] = [];
 
   for (const part of rawContent) {
     if (!isRecord(part)) continue;
+
+    if (part.type === "toolCall") {
+      const tool = assistantToolFromToolCall(part);
+      if (tool) {
+        tools.push(tool);
+      }
+      continue;
+    }
 
     if (stringField(part.text)) {
       content.push({ type: "text", text: stringField(part.text) });
@@ -524,7 +529,33 @@ function extractAssistantContent(value: Record<string, unknown>): {
     }
   }
 
-  return { content, thinking };
+  return { content, thinking, tools };
+}
+
+function assistantToolFromToolCall(part: Record<string, unknown>): AssistantToolPart | null {
+  const id = stringField(part.id);
+  if (!id) return null;
+
+  const name = toolName(part) || "tool";
+  const input = toolInput(part);
+  return {
+    id,
+    name,
+    label: name || "Tool call",
+    ...(input !== undefined ? { input } : {}),
+    ...(toolDetail(part) ? { detail: toolDetail(part) } : {}),
+    status: "pending",
+  };
+}
+
+function assistantToolFromToolCallEndEvent(event: Record<string, unknown>): AssistantToolPart | null {
+  const assistantEvent = recordField(event.assistantMessageEvent);
+  if (!assistantEvent || stringField(assistantEvent.type) !== "toolcall_end") return null;
+
+  const toolCall = recordField(assistantEvent.toolCall);
+  if (!toolCall) return null;
+
+  return assistantToolFromToolCall(toolCall);
 }
 
 // ── Delta extraction (streaming text / thinking) ──
@@ -570,6 +601,105 @@ function extractDeltaBlocks(event: Record<string, unknown>): ContentBlock[] {
   return [];
 }
 
+// ── Tool result hydration ──
+
+function isToolResultMessage(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) && stringField(value.role) === "toolResult";
+}
+
+function attachToolResultToAssistant(
+  items: ConversationItem[],
+  record: Record<string, unknown>,
+): void {
+  const id = stringField(record.toolCallId);
+  if (!id) return;
+
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item.kind !== "assistant" || !item.tools?.some((tool) => tool.id === id)) {
+      continue;
+    }
+
+    item.tools = mergeAssistantTools(item.tools, [assistantToolFromToolResult(record, id)]);
+    return;
+  }
+}
+
+function assistantToolFromToolResult(
+  record: Record<string, unknown>,
+  id: string,
+): Partial<AssistantToolPart> & { id: string } {
+  const failed = isToolError(record);
+  const output = record.output ?? record.result ?? record.content;
+  const name = toolName(record);
+  return {
+    id,
+    ...(name ? { name, label: name } : {}),
+    status: failed ? "error" : "done",
+    output,
+    content: textFromToolPayload(output) || stringField(output),
+  };
+}
+
+function mergeAssistantTools(
+  existing: AssistantToolPart[],
+  incoming: Array<Partial<AssistantToolPart> & { id: string }>,
+): AssistantToolPart[] {
+  const result = [...existing];
+  for (const tool of incoming) {
+    const index = result.findIndex((item) => item.id === tool.id);
+    if (index === -1) {
+      result.push(completeAssistantTool(tool));
+      continue;
+    }
+    result[index] = mergeAssistantTool(result[index], tool);
+  }
+  return result;
+}
+
+function completeAssistantTool(
+  tool: Partial<AssistantToolPart> & { id: string },
+): AssistantToolPart {
+  return {
+    id: tool.id,
+    name: tool.name ?? "tool",
+    label: tool.label ?? tool.name ?? "Tool call",
+    status: tool.status ?? "pending",
+    ...(tool.input !== undefined ? { input: tool.input } : {}),
+    ...(tool.detail !== undefined ? { detail: tool.detail } : {}),
+    ...(tool.output !== undefined ? { output: tool.output } : {}),
+    ...(tool.content !== undefined ? { content: tool.content } : {}),
+  };
+}
+
+function mergeAssistantTool(
+  existing: AssistantToolPart,
+  incoming: Partial<AssistantToolPart> & { id: string },
+): AssistantToolPart {
+  return {
+    ...existing,
+    ...(incoming.name !== undefined ? { name: incoming.name } : {}),
+    ...(incoming.label !== undefined ? { label: incoming.label } : {}),
+    ...(incoming.input !== undefined ? { input: incoming.input } : {}),
+    ...(incoming.detail !== undefined ? { detail: incoming.detail } : {}),
+    ...(incoming.output !== undefined ? { output: incoming.output } : {}),
+    ...(incoming.content !== undefined ? { content: incoming.content } : {}),
+    status: mergeToolStatus(existing.status, incoming.status),
+  };
+}
+
+function mergeToolStatus(
+  existing: AssistantToolPart["status"],
+  incoming?: AssistantToolPart["status"],
+): AssistantToolPart["status"] {
+  if (!incoming) return existing;
+  if (existing === "error" || incoming === "error") return "error";
+  if (existing === "done") return "done";
+  if (incoming === "done") return "done";
+  if (existing === "running" && incoming === "pending") return "running";
+  return incoming;
+}
+
 // ── Session summary inference ──
 
 function inferSessionSummary(records: unknown[]): SessionSummary {
@@ -604,10 +734,7 @@ function messageIdFromEvent(event: Record<string, unknown>): string | null {
 }
 
 function executionToolId(event: Record<string, unknown>): string {
-  return firstString(
-    stringField(event.toolCallId),
-    stringField(event.tool_call_id),
-  );
+  return stringField(event.toolCallId).trim();
 }
 
 function toolName(event: Record<string, unknown>): string {
@@ -625,6 +752,15 @@ function toolDetail(event: Record<string, unknown>): string {
     return commandField(event);
   }
   return pathField(event) || commandField(event);
+}
+
+function toolInput(event: Record<string, unknown>): unknown {
+  return event.input
+    ?? event.args
+    ?? parseJsonField(event.arguments)
+    ?? recordField(event.tool)?.input
+    ?? recordField(event.tool)?.args
+    ?? parseJsonField(recordField(event.tool)?.arguments);
 }
 
 function isToolError(event: Record<string, unknown>): boolean {
@@ -651,12 +787,12 @@ function isFireAndForgetExtensionMethod(method: string): boolean {
 }
 
 function extensionParams(event: Record<string, unknown>): Record<string, unknown> {
-  if (typeof event.params === "object" && event.params !== null) {
-    return event.params as Record<string, unknown>;
-  }
-  const params: Record<string, unknown> = {};
+  const params: Record<string, unknown> = recordField(event.params)
+    ? { ...recordField(event.params) }
+    : {};
+
   for (const [key, value] of Object.entries(event)) {
-    if (key !== "type" && key !== "id" && key !== "method") {
+    if (key !== "type" && key !== "id" && key !== "method" && key !== "params") {
       params[key] = value;
     }
   }
@@ -742,6 +878,16 @@ function recordOrJsonField(value: unknown): Record<string, unknown> | undefined 
     return recordField(parsed);
   } catch {
     return undefined;
+  }
+}
+
+function parseJsonField(value: unknown): unknown {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
   }
 }
 
@@ -933,58 +1079,10 @@ export function createPiViewAdapter(
   };
 }
 
-/**
- * Local pure reducer for the adapter's internal view tracking.
- * Duplicates the logic of {@link applyViewPatch} from view-reducer.ts
- * rather than importing it, to keep the protocol modules free of
- * circular dependencies.
- */
+/** Keep the adapter's private SessionView in sync for context-dependent patches. */
 function applyPatchLocally(
   view: SessionView,
   patch: ViewPatch,
 ): SessionView {
-  // The adapter only tracks top-level items and status for context;
-  // deep content merging is handled by the shared applyViewPatch in the UI.
-  // This local copy handles the surface-level state the adapter needs
-  // for subsequent event interpretation (status, pendingRequests, items).
-  switch (patch.type) {
-    case "appendItem": {
-      return {
-        ...view,
-        items: [...view.items, patch.item],
-      };
-    }
-    case "setStatus": {
-      return {
-        ...view,
-        status: patch.status,
-        statusText: patch.statusText ?? view.statusText,
-      };
-    }
-    case "setPendingRequest": {
-      return {
-        ...view,
-        pendingRequests: [...view.pendingRequests, patch.request],
-        status: "blocked",
-      };
-    }
-    case "clearPendingRequest": {
-      const pendingRequests = view.pendingRequests.filter(
-        (r) => r.id !== patch.id,
-      );
-      return {
-        ...view,
-        pendingRequests,
-        status:
-          pendingRequests.length > 0
-            ? "blocked"
-            : view.status === "blocked"
-              ? "running"
-              : view.status,
-      };
-    }
-    default: {
-      return view;
-    }
-  }
+  return applyViewPatch(view, patch);
 }

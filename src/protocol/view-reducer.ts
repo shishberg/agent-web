@@ -1,4 +1,4 @@
-import type { ConversationItem, SessionView, ViewPatch } from "./types";
+import type { AssistantMessageItem, AssistantToolPart, ConversationItem, SessionView, ViewPatch } from "./types";
 
 /**
  * Pure reducer: applies a single ViewPatch to a SessionView and returns the
@@ -13,6 +13,8 @@ export function applyViewPatch(
       return appendItem(view, patch.item);
     case "updateItem":
       return updateItem(view, patch.id, patch.partial);
+    case "upsertAssistantTool":
+      return upsertAssistantTool(view, patch.assistantId, patch.tool);
     case "setStatus":
       return setStatus(view, patch.status, patch.statusText);
     case "setPendingRequest":
@@ -45,6 +47,22 @@ function updateItem(
     items: view.items.map((item) =>
       item.id === id ? (mergeItem(item, partial) as ConversationItem) : item,
     ),
+  };
+}
+
+function upsertAssistantTool(
+  view: SessionView,
+  assistantId: string,
+  tool: Partial<AssistantToolPart> & { id: string },
+): SessionView {
+  return {
+    ...view,
+    items: view.items.map((item) => {
+      if (item.kind !== "assistant" || item.id !== assistantId) {
+        return item;
+      }
+      return mergeAssistantTool(item, tool);
+    }),
   };
 }
 
@@ -140,7 +158,96 @@ function mergeItem(
     }
   }
 
+  if (
+    item.kind === "assistant" &&
+    partial.kind === "assistant" &&
+    "tools" in partial
+  ) {
+    (merged as AssistantMessageItem).tools = mergeAssistantToolLists(
+      item.tools ?? [],
+      partial.tools ?? [],
+    );
+  }
+
   return merged as ConversationItem;
+}
+
+function mergeAssistantTool(
+  item: AssistantMessageItem,
+  incoming: Partial<AssistantToolPart> & { id: string },
+): AssistantMessageItem {
+  return {
+    ...item,
+    tools: mergeAssistantToolLists(item.tools ?? [], [incoming]),
+  };
+}
+
+function mergeAssistantToolLists(
+  existing: AssistantToolPart[],
+  incoming: Array<Partial<AssistantToolPart> & { id: string }>,
+): AssistantToolPart[] {
+  let result = [...existing];
+  for (const tool of incoming) {
+    const index = result.findIndex((item) => item.id === tool.id);
+    if (index === -1) {
+      result = [...result, completeAssistantTool(tool)];
+      continue;
+    }
+    result[index] = mergeAssistantToolPart(result[index], tool);
+  }
+  return result;
+}
+
+function completeAssistantTool(
+  tool: Partial<AssistantToolPart> & { id: string },
+): AssistantToolPart {
+  return {
+    id: tool.id,
+    name: tool.name ?? "tool",
+    label: tool.label ?? tool.name ?? "Tool call",
+    status: tool.status ?? "pending",
+    ...(tool.input !== undefined ? { input: tool.input } : {}),
+    ...(tool.detail !== undefined ? { detail: tool.detail } : {}),
+    ...(tool.output !== undefined ? { output: tool.output } : {}),
+    ...(tool.content !== undefined ? { content: tool.content } : {}),
+  };
+}
+
+function mergeAssistantToolPart(
+  existing: AssistantToolPart,
+  incoming: Partial<AssistantToolPart> & { id: string },
+): AssistantToolPart {
+  return {
+    ...existing,
+    ...definedAssistantToolFields(incoming),
+    id: existing.id,
+    status: mergeAssistantToolStatus(existing.status, incoming.status),
+  };
+}
+
+function definedAssistantToolFields(
+  tool: Partial<AssistantToolPart>,
+): Partial<AssistantToolPart> {
+  const fields: Partial<AssistantToolPart> = {};
+  if (tool.name !== undefined) fields.name = tool.name;
+  if (tool.label !== undefined) fields.label = tool.label;
+  if (tool.input !== undefined) fields.input = tool.input;
+  if (tool.detail !== undefined) fields.detail = tool.detail;
+  if (tool.output !== undefined) fields.output = tool.output;
+  if (tool.content !== undefined) fields.content = tool.content;
+  return fields;
+}
+
+function mergeAssistantToolStatus(
+  existing: AssistantToolPart["status"],
+  incoming?: AssistantToolPart["status"],
+): AssistantToolPart["status"] {
+  if (!incoming) return existing;
+  if (existing === "error" || incoming === "error") return "error";
+  if (existing === "done") return "done";
+  if (incoming === "done") return "done";
+  if (existing === "running" && incoming === "pending") return "running";
+  return incoming;
 }
 
 function mergeContent(

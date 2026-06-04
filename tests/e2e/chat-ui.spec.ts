@@ -527,6 +527,24 @@ test("renders streaming tool lifecycle events as styled tool details", async ({
 		sessionId,
 		streamEvent("pi.event", sessionId, {
 			event: {
+				type: "message_update",
+				message: { id: "assistant-1", role: "assistant" },
+				assistantMessageEvent: {
+					type: "toolcall_end",
+					toolCall: {
+						id: "call_1",
+						name: "bash",
+						arguments: { command: "pwd" },
+					},
+				},
+			},
+		}),
+	);
+	await pushEvent(
+		page,
+		sessionId,
+		streamEvent("pi.event", sessionId, {
+			event: {
 				type: "tool_execution_start",
 				toolCallId: "call_1",
 				toolName: "bash",
@@ -806,7 +824,7 @@ test("keeps the streaming placeholder visible when thinking and tools are hidden
 	await expect(message.locator(".tool-detail")).toHaveCount(0);
 });
 
-test("renders tool lifecycle events before the assistant message starts", async ({
+test("ignores tool lifecycle events before the assistant tool call exists", async ({
 	page,
 }) => {
 	await setupMockManager(page);
@@ -832,14 +850,7 @@ test("renders tool lifecycle events before the assistant message starts", async 
 		}),
 	);
 
-	const toolDetail = page.locator(".tool-detail").first();
-	await expect(toolDetail).toHaveCount(1);
-	await expect(toolDetail.locator("summary")).toContainText("bash");
-	await expect(toolDetail.locator("summary")).toContainText("pwd");
-	await expect(toolDetail.locator(".tool-status-dot")).toHaveAttribute(
-		"title",
-		"In progress",
-	);
+	await expect(page.locator(".tool-detail")).toHaveCount(0);
 
 	await pushEvent(
 		page,
@@ -864,11 +875,7 @@ test("renders tool lifecycle events before the assistant message starts", async 
 	);
 
 	await expect(page.getByText("Checking.")).toBeVisible();
-	await expect(page.locator(".tool-detail")).toHaveCount(1);
-	await expect(toolDetail.locator(".tool-status-dot")).toHaveAttribute(
-		"title",
-		"In progress",
-	);
+	await expect(page.locator(".tool-detail")).toHaveCount(0);
 });
 
 test("sends active-turn composer input as queued prompts", async ({ page }) => {

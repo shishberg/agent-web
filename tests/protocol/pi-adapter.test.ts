@@ -178,6 +178,71 @@ describe("piSnapshotToView", () => {
     expect(view.items[0].id).toBe("wrapper-id");
     expect(view.items[0].timestamp).toBe(9999);
   });
+
+  it("attaches ToolResultMessage records to assistant-local tools by exact toolCallId", () => {
+    const view = piSnapshotToView([
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: [
+          { type: "text", text: "Running a command." },
+          { type: "toolCall", id: "call_123", name: "bash", arguments: { command: "pwd" } },
+        ],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "call_123",
+        toolName: "bash",
+        content: [{ type: "text", text: "/tmp\n" }],
+        isError: false,
+      },
+    ]);
+
+    expect(view.items).toHaveLength(1);
+    expect(view.items[0]).toMatchObject({ kind: "assistant", id: "assistant-1" });
+    if (view.items[0].kind === "assistant") {
+      expect(view.items[0].content).toEqual([{ type: "text", text: "Running a command." }]);
+      expect(view.items[0].tools).toEqual([
+        expect.objectContaining({
+          id: "call_123",
+          name: "bash",
+          label: "bash",
+          input: { command: "pwd" },
+          status: "done",
+          output: [{ type: "text", text: "/tmp\n" }],
+          content: "/tmp\n",
+        }),
+      ]);
+    }
+  });
+
+  it("does not fuzzy-match orphan ToolResultMessage records", () => {
+    const view = piSnapshotToView([
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: [
+          { type: "toolCall", id: "call_1", name: "bash", arguments: { command: "pwd" } },
+        ],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "call_2",
+        toolName: "bash",
+        content: [{ type: "text", text: "/tmp\n" }],
+      },
+    ]);
+
+    expect(view.items).toHaveLength(1);
+    if (view.items[0].kind === "assistant") {
+      expect(view.items[0].tools).toEqual([
+        expect.objectContaining({
+          id: "call_1",
+          status: "pending",
+        }),
+      ]);
+    }
+  });
 });
 
 // ── Stream event adapter tests ──
@@ -448,7 +513,45 @@ describe("piStreamEventToPatch", () => {
     });
   });
 
-  it("returns appendItem for tool_execution_start", () => {
+  it("returns upsertAssistantTool for message_update toolcall_end using only toolCall.id", () => {
+    const patch = piStreamEventToPatch({
+      type: "message_update",
+      toolCallId: "wrong-id",
+      message: { id: "assistant-1", role: "assistant" },
+      assistantMessageEvent: {
+        type: "toolcall_end",
+        toolCall: {
+          id: "call_1",
+          name: "bash",
+          arguments: { command: "pwd" },
+        },
+      },
+    });
+
+    expect(patch).toMatchObject({
+      type: "upsertAssistantTool",
+      assistantId: "assistant-1",
+      tool: {
+        id: "call_1",
+        name: "bash",
+        label: "bash",
+        input: { command: "pwd" },
+        detail: "pwd",
+        status: "pending",
+      },
+    });
+  });
+
+  it("returns upsertAssistantTool for tool_execution_start with an exact assistant-local tool id", () => {
+    const state = createEmptySessionView();
+    state.items = [
+      {
+        kind: "assistant",
+        id: "assistant-1",
+        content: [],
+        tools: [{ id: "tool-1", name: "bash", label: "bash", status: "pending" }],
+      },
+    ];
     const event = {
       type: "tool_execution_start",
       toolCallId: "tool-1",
@@ -456,19 +559,31 @@ describe("piStreamEventToPatch", () => {
       args: { command: "pwd" },
     };
 
-    const patch = piStreamEventToPatch(event);
+    const patch = piStreamEventToPatch(event, state);
     expect(patch).toMatchObject({
-      type: "appendItem",
-      item: {
+      type: "upsertAssistantTool",
+      assistantId: "assistant-1",
+      tool: {
         id: "tool-1",
-        kind: "tool",
-        toolName: "bash",
+        name: "bash",
+        label: "bash",
+        input: { command: "pwd" },
+        detail: "pwd",
         status: "running",
       },
     });
   });
 
-  it("returns updateItem for tool_execution_end with done status", () => {
+  it("returns upsertAssistantTool for tool_execution_end with done status", () => {
+    const state = createEmptySessionView();
+    state.items = [
+      {
+        kind: "assistant",
+        id: "assistant-1",
+        content: [],
+        tools: [{ id: "tool-1", name: "bash", label: "bash", status: "running" }],
+      },
+    ];
     const event = {
       type: "tool_execution_end",
       toolCallId: "tool-1",
@@ -476,18 +591,29 @@ describe("piStreamEventToPatch", () => {
       result: { content: [{ type: "text", text: "/tmp" }] },
     };
 
-    const patch = piStreamEventToPatch(event);
+    const patch = piStreamEventToPatch(event, state);
     expect(patch).toMatchObject({
-      type: "updateItem",
-      id: "tool-1",
-      partial: {
-        kind: "tool",
+      type: "upsertAssistantTool",
+      assistantId: "assistant-1",
+      tool: {
+        id: "tool-1",
         status: "done",
+        output: { content: [{ type: "text", text: "/tmp" }] },
+        content: "/tmp",
       },
     });
   });
 
-  it("returns updateItem with error status for failed tools", () => {
+  it("returns upsertAssistantTool with error status for failed tools", () => {
+    const state = createEmptySessionView();
+    state.items = [
+      {
+        kind: "assistant",
+        id: "assistant-1",
+        content: [],
+        tools: [{ id: "tool-1", name: "bash", label: "bash", status: "running" }],
+      },
+    ];
     const event = {
       type: "tool_execution_end",
       toolCallId: "tool-1",
@@ -495,12 +621,12 @@ describe("piStreamEventToPatch", () => {
       result: { isError: true, content: [{ type: "text", text: "command not found" }] },
     };
 
-    const patch = piStreamEventToPatch(event);
+    const patch = piStreamEventToPatch(event, state);
     expect(patch).toMatchObject({
-      type: "updateItem",
-      id: "tool-1",
-      partial: {
-        kind: "tool",
+      type: "upsertAssistantTool",
+      assistantId: "assistant-1",
+      tool: {
+        id: "tool-1",
         status: "error",
       },
     });
@@ -518,6 +644,39 @@ describe("piStreamEventToPatch", () => {
       piStreamEventToPatch({
         type: "tool_execution_end",
         toolName: "bash",
+      }),
+    ).toBeNull();
+  });
+
+  it("does not create a top-level tool item or fuzzy-match when the toolCallId is unknown", () => {
+    const state = createEmptySessionView();
+    state.items = [
+      {
+        kind: "assistant",
+        id: "assistant-1",
+        content: [],
+        tools: [{ id: "call_1", name: "bash", label: "bash", input: { command: "pwd" }, status: "pending" }],
+      },
+    ];
+
+    expect(
+      piStreamEventToPatch(
+        {
+          type: "tool_execution_start",
+          toolCallId: "call_2",
+          toolName: "bash",
+          args: { command: "pwd" },
+        },
+        state,
+      ),
+    ).toBeNull();
+
+    expect(
+      piStreamEventToPatch({
+        type: "tool_execution_start",
+        toolCallId: "call_1",
+        toolName: "bash",
+        args: { command: "pwd" },
       }),
     ).toBeNull();
   });
@@ -585,6 +744,55 @@ describe("piStreamEventToPatch", () => {
     expect(patch).toMatchObject({
       type: "setExtensionDraft",
       text: "draft content here",
+    });
+  });
+
+  it("normalizes top-level extension UI request fields for dialogs", () => {
+    const patch = piStreamEventToPatch({
+      type: "extension_ui_request",
+      id: "confirm-top-level",
+      method: "confirm",
+      title: "Clear session?",
+      message: "All messages will be lost.",
+      timeout: 5000,
+    });
+
+    expect(patch).toMatchObject({
+      type: "setPendingRequest",
+      request: {
+        id: "confirm-top-level",
+        method: "confirm",
+        params: {
+          title: "Clear session?",
+          message: "All messages will be lost.",
+          timeout: 5000,
+        },
+      },
+    });
+  });
+
+  it("normalizes top-level extension UI request fields for notifications and set_editor_text", () => {
+    const statusPatch = piStreamEventToPatch({
+      type: "extension_ui_request",
+      id: "status-top-level",
+      method: "setStatus",
+      statusText: "Indexing files",
+    });
+    expect(statusPatch).toMatchObject({
+      type: "setStatus",
+      status: "running",
+      statusText: "Indexing files",
+    });
+
+    const draftPatch = piStreamEventToPatch({
+      type: "extension_ui_request",
+      id: "editor-top-level",
+      method: "set_editor_text",
+      text: "prefilled text",
+    });
+    expect(draftPatch).toMatchObject({
+      type: "setExtensionDraft",
+      text: "prefilled text",
     });
   });
 
@@ -736,8 +944,9 @@ describe("snapshot + stream integration", () => {
     expect(msg.content[0].text).toBe("Hello world.");
   });
 
-  it("replays tool stream and produces tool items", () => {
+  it("replays a Pi tool stream as one assistant-local tool with status transitions", () => {
     let view = createEmptySessionView();
+    const seenStatuses: string[] = [];
 
     const events = [
       { type: "agent_start" },
@@ -746,34 +955,225 @@ describe("snapshot + stream integration", () => {
         message: { id: "assistant-1", role: "assistant" },
       },
       {
+        type: "message_update",
+        message: {
+          id: "assistant-1",
+          role: "assistant",
+          content: [
+            { type: "text", text: "Let me run that." },
+            { type: "toolCall", id: "call_123", name: "bash", arguments: { command: "ls -la" } },
+          ],
+        },
+      },
+      {
         type: "tool_execution_start",
-        toolCallId: "tool-abc",
+        toolCallId: "call_123",
         toolName: "bash",
         args: { command: "ls -la" },
       },
       {
+        type: "tool_execution_update",
+        toolCallId: "call_123",
+        partialResult: { content: [{ type: "text", text: "total 12\n" }] },
+      },
+      {
         type: "tool_execution_end",
-        toolCallId: "tool-abc",
+        toolCallId: "call_123",
         result: { content: [{ type: "text", text: "total 12\n..." }] },
       },
       { type: "agent_end" },
     ];
 
     for (const event of events) {
-      const patch = piStreamEventToPatch(event);
+      const patch = piStreamEventToPatch(event, view);
+      if (patch) {
+        view = applyViewPatch(view, patch);
+        if (patch.type === "updateItem" || patch.type === "upsertAssistantTool") {
+          const assistant = view.items.find((item) => item.kind === "assistant");
+          if (assistant?.kind === "assistant" && assistant.tools?.[0]) {
+            seenStatuses.push(assistant.tools[0].status);
+          }
+        }
+      }
+    }
+
+    expect(view.items).toHaveLength(1);
+    const assistant = view.items[0];
+    expect(assistant.kind).toBe("assistant");
+    if (assistant.kind === "assistant") {
+      expect(assistant.content).toEqual([{ type: "text", text: "Let me run that." }]);
+      expect(assistant.tools).toEqual([
+        expect.objectContaining({
+          id: "call_123",
+          name: "bash",
+          label: "bash",
+          input: { command: "ls -la" },
+          detail: "ls -la",
+          status: "done",
+          content: "total 12\n...",
+        }),
+      ]);
+    }
+    expect(seenStatuses).toEqual(["pending", "running", "running", "done"]);
+  });
+
+  it("seeds assistant-local tools from live toolcall_end before execution lifecycle", () => {
+    let view = createEmptySessionView();
+    const seenStatuses: string[] = [];
+
+    const events = [
+      {
+        type: "message_start",
+        message: { id: "assistant-1", role: "assistant" },
+      },
+      {
+        type: "message_update",
+        toolCallId: "wrong-id",
+        message: { id: "assistant-1", role: "assistant" },
+        assistantMessageEvent: {
+          type: "toolcall_end",
+          toolCall: {
+            id: "call_live",
+            name: "bash",
+            arguments: { command: "pwd" },
+          },
+        },
+      },
+      {
+        type: "tool_execution_start",
+        toolCallId: "call_live",
+        toolName: "bash",
+        args: { command: "pwd" },
+      },
+      {
+        type: "tool_execution_end",
+        toolCallId: "call_live",
+        result: { content: [{ type: "text", text: "/tmp" }] },
+      },
+    ];
+
+    for (const event of events) {
+      const patch = piStreamEventToPatch(event, view);
+      if (patch) {
+        view = applyViewPatch(view, patch);
+        if (patch.type === "upsertAssistantTool") {
+          const assistant = view.items.find((item) => item.kind === "assistant");
+          if (assistant?.kind === "assistant" && assistant.tools?.[0]) {
+            seenStatuses.push(assistant.tools[0].status);
+          }
+        }
+      }
+    }
+
+    expect(view.items).toHaveLength(1);
+    const assistant = view.items[0];
+    expect(assistant.kind).toBe("assistant");
+    if (assistant.kind === "assistant") {
+      expect(assistant.tools).toEqual([
+        expect.objectContaining({
+          id: "call_live",
+          name: "bash",
+          label: "bash",
+          input: { command: "pwd" },
+          detail: "pwd",
+          status: "done",
+          content: "/tmp",
+        }),
+      ]);
+    }
+    expect(seenStatuses).toEqual(["pending", "running", "done"]);
+  });
+
+  it("keeps similar parallel tools separate by exact id", () => {
+    let view = createEmptySessionView();
+
+    const events = [
+      {
+        type: "message_start",
+        message: { id: "assistant-1", role: "assistant" },
+      },
+      {
+        type: "message_update",
+        message: {
+          id: "assistant-1",
+          role: "assistant",
+          content: [
+            { type: "toolCall", id: "call_1", name: "bash", arguments: { command: "pwd" } },
+            { type: "toolCall", id: "call_2", name: "bash", arguments: { command: "pwd" } },
+          ],
+        },
+      },
+      {
+        type: "tool_execution_start",
+        toolCallId: "call_2",
+        toolName: "bash",
+        args: { command: "pwd" },
+      },
+    ];
+
+    for (const event of events) {
+      const patch = piStreamEventToPatch(event, view);
       if (patch) {
         view = applyViewPatch(view, patch);
       }
     }
 
-    // 1 assistant message + 1 tool item
-    expect(view.items).toHaveLength(2);
-    const toolItem = view.items[1];
-    expect(toolItem.kind).toBe("tool");
-    if (toolItem.kind === "tool") {
-      expect(toolItem.id).toBe("tool-abc");
-      expect(toolItem.toolName).toBe("bash");
-      expect(toolItem.status).toBe("done");
+    expect(view.items).toHaveLength(1);
+    const assistant = view.items[0];
+    expect(assistant.kind).toBe("assistant");
+    if (assistant.kind === "assistant") {
+      expect(assistant.tools?.map((tool) => ({ id: tool.id, status: tool.status }))).toEqual([
+        { id: "call_1", status: "pending" },
+        { id: "call_2", status: "running" },
+      ]);
+    }
+  });
+
+  it("handles an id-less assistant lifecycle event with a tool call as one stable assistant tool", () => {
+    let view = createEmptySessionView();
+
+    const events = [
+      {
+        type: "message_start",
+        message: { role: "assistant", timestamp: 1717100000123, responseId: "turn-tool" },
+      },
+      {
+        type: "message_update",
+        message: {
+          role: "assistant",
+          timestamp: 1717100000123,
+          responseId: "turn-tool",
+          content: [
+            { type: "toolCall", id: "call_idless", name: "bash", arguments: { command: "pwd" } },
+          ],
+        },
+      },
+      {
+        type: "tool_execution_start",
+        toolCallId: "call_idless",
+        toolName: "bash",
+        args: { command: "pwd" },
+      },
+      {
+        type: "tool_execution_end",
+        toolCallId: "call_idless",
+        result: { content: [{ type: "text", text: "/tmp" }] },
+      },
+    ];
+
+    for (const event of events) {
+      const patch = piStreamEventToPatch(event, view);
+      if (patch) {
+        view = applyViewPatch(view, patch);
+      }
+    }
+
+    expect(view.items).toHaveLength(1);
+    expect(view.items[0].id).toBe("pi:assistant:timestamp:1717100000123");
+    if (view.items[0].kind === "assistant") {
+      expect(view.items[0].tools).toEqual([
+        expect.objectContaining({ id: "call_idless", status: "done", content: "/tmp" }),
+      ]);
     }
   });
 
@@ -994,6 +1394,37 @@ describe("createPiViewAdapter", () => {
       willRetry: false,
     });
     expect(patches[0]).toMatchObject({ type: "setStatus", status: "failed" });
+  });
+
+  it("tracks assistant-local tool ids across stateful adapter calls", () => {
+    const adapter = createPiViewAdapter(createEmptySessionView());
+
+    expect(adapter.toPatches({
+      type: "message_start",
+      message: { id: "assistant-1", role: "assistant" },
+    })).toMatchObject([{ type: "appendItem" }]);
+
+    expect(adapter.toPatches({
+      type: "message_update",
+      message: {
+        id: "assistant-1",
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call_1", name: "bash", arguments: { command: "pwd" } }],
+      },
+    })).toMatchObject([{ type: "updateItem", id: "assistant-1" }]);
+
+    expect(adapter.toPatches({
+      type: "tool_execution_start",
+      toolCallId: "call_1",
+      toolName: "bash",
+      args: { command: "pwd" },
+    })).toMatchObject([
+      {
+        type: "upsertAssistantTool",
+        assistantId: "assistant-1",
+        tool: { id: "call_1", status: "running" },
+      },
+    ]);
   });
 
   it("handles pending request and clear cycle", () => {

@@ -87,11 +87,23 @@ export type UsageInfo = {
   cacheTokens?: number;
 };
 
+export type AssistantToolPart = {
+  id: string;
+  name: string;
+  label: string;
+  input?: unknown;
+  detail?: string;
+  output?: unknown;
+  content?: string;
+  status: "pending" | "running" | "done" | "error";
+};
+
 export type AssistantMessageItem = BaseItem & {
   kind: "assistant";
   content: ContentBlock[];
   /** Thinking / reasoning blocks, rendered in a collapsible panel. */
   thinking?: ContentBlock[];
+  tools?: AssistantToolPart[];
   provider?: string;
   model?: string;
   usage?: UsageInfo;
@@ -152,6 +164,7 @@ export type SessionView = {
 export type ViewPatch =
   | { type: "appendItem"; item: ConversationItem }
   | { type: "updateItem"; id: string; partial: Partial<ConversationItem> }
+  | { type: "upsertAssistantTool"; assistantId: string; tool: Partial<AssistantToolPart> & { id: string } }
   | { type: "setStatus"; status: RunStatus; statusText?: string }
   | { type: "setPendingRequest"; request: UserRequest }
   | { type: "clearPendingRequest"; id: string }

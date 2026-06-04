@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type {
   AdapterContext,
   AssistantMessageItem,
+  AssistantToolPart,
   ContentBlock,
   SessionView,
   UserMessageItem,
@@ -55,10 +56,20 @@ describe("SessionView protocol types", () => {
       provider: "anthropic",
       model: "claude-4",
       usage: { inputTokens: 100, outputTokens: 50 },
+      tools: [
+        {
+          id: "call_1",
+          name: "bash",
+          label: "bash",
+          input: { command: "pwd" },
+          status: "pending",
+        } satisfies AssistantToolPart,
+      ],
     };
     expect(msg.kind).toBe("assistant");
     expect(msg.provider).toBe("anthropic");
     expect(msg.thinking).toHaveLength(1);
+    expect(msg.tools?.[0]?.id).toBe("call_1");
     expect(msg.usage?.inputTokens).toBe(100);
   });
 
@@ -82,8 +93,9 @@ describe("SessionView protocol types", () => {
       { type: "setExtensionDraft", text: "draft" },
       { type: "setCursor", cursor: "evt-5" },
       { type: "setSession", session: { id: "s1", title: "S1", status: "idle" } },
+      { type: "upsertAssistantTool", assistantId: "a1", tool: { id: "call_1", status: "running" } },
     ];
-    expect(patches).toHaveLength(8);
+    expect(patches).toHaveLength(9);
   });
 
   it("SessionView type has all required fields", () => {

@@ -124,6 +124,104 @@ describe("applyViewPatch", () => {
     expect(next.items).toEqual(view.items);
   });
 
+  it("upsertAssistantTool merges assistant-local tools by exact id", () => {
+    let view = createEmptySessionView();
+    view = applyViewPatch(view, {
+      type: "appendItem",
+      item: {
+        kind: "assistant",
+        id: "a1",
+        content: [],
+        tools: [
+          {
+            id: "call_1",
+            name: "bash",
+            label: "bash",
+            input: { command: "pwd" },
+            status: "pending",
+          },
+        ],
+      } as AssistantMessageItem,
+    });
+
+    view = applyViewPatch(view, {
+      type: "upsertAssistantTool",
+      assistantId: "a1",
+      tool: {
+        id: "call_1",
+        status: "done",
+        output: "done",
+        content: "done",
+      },
+    });
+
+    expect((view.items[0] as AssistantMessageItem).tools).toEqual([
+      {
+        id: "call_1",
+        name: "bash",
+        label: "bash",
+        input: { command: "pwd" },
+        status: "done",
+        output: "done",
+        content: "done",
+      },
+    ]);
+  });
+
+  it("upsertAssistantTool does not fuzzy-merge similar tools", () => {
+    let view = createEmptySessionView();
+    view = applyViewPatch(view, {
+      type: "appendItem",
+      item: {
+        kind: "assistant",
+        id: "a1",
+        content: [],
+        tools: [
+          {
+            id: "call_1",
+            name: "bash",
+            label: "bash",
+            input: { command: "pwd" },
+            status: "pending",
+          },
+        ],
+      } as AssistantMessageItem,
+    });
+
+    view = applyViewPatch(view, {
+      type: "upsertAssistantTool",
+      assistantId: "a1",
+      tool: {
+        id: "call_2",
+        name: "bash",
+        label: "bash",
+        input: { command: "pwd" },
+        status: "running",
+      },
+    });
+
+    expect((view.items[0] as AssistantMessageItem).tools?.map((tool) => tool.id)).toEqual([
+      "call_1",
+      "call_2",
+    ]);
+  });
+
+  it("upsertAssistantTool ignores non-matching assistant ids", () => {
+    let view = createEmptySessionView();
+    view = applyViewPatch(view, {
+      type: "appendItem",
+      item: { kind: "assistant", id: "a1", content: [] } as AssistantMessageItem,
+    });
+
+    const next = applyViewPatch(view, {
+      type: "upsertAssistantTool",
+      assistantId: "missing",
+      tool: { id: "call_1", status: "running" },
+    });
+
+    expect((next.items[0] as AssistantMessageItem).tools).toBeUndefined();
+  });
+
   it("setStatus changes status and statusText", () => {
     let view = createEmptySessionView();
     view = applyViewPatch(view, { type: "setStatus", status: "running" });

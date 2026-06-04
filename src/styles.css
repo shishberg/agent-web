@@ -998,6 +998,7 @@ pre {
   border-radius: 999px;
 }
 
+.tool-status-dot-pending,
 .tool-status-dot-running {
   background: #f97316;
 }

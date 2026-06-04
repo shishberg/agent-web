@@ -1,8 +1,8 @@
-import type { ConversationItem, ContentBlock, SessionView, ViewPatch } from "../protocol/types";
+import type { AssistantToolPart, ConversationItem, ContentBlock, SessionView, ViewPatch } from "../protocol/types";
 
 export type Role = "user" | "assistant" | "system";
 export type MessageStatus = "streaming" | "done";
-export type MessageToolStatus = "running" | "done" | "error";
+export type MessageToolStatus = "pending" | "running" | "done" | "error";
 
 export type MessageToolPart = {
   type: "tool";
@@ -89,7 +89,6 @@ export type PiResponse = {
 };
 
 let generatedId = 0;
-const TOOL_LIFECYCLE_MESSAGE_PREFIX = "tool-lifecycle-message-";
 
 export function createInitialSessionState(): SessionState {
   return {
@@ -133,7 +132,6 @@ export function reduceSessionEvent(state: SessionState, event: PiEvent): Session
       state.activeMessageId = id;
       const message = upsertMessage(state, id, role, "streaming");
       applyCompleteMessage(message, event);
-      mergePendingToolLifecycleMessage(state, message);
       break;
     }
     case "message_update":
@@ -147,7 +145,6 @@ export function reduceSessionEvent(state: SessionState, event: PiEvent): Session
       }
       const message = upsertMessage(state, id, role, "done");
       applyCompleteMessage(message, event);
-      mergePendingToolLifecycleMessage(state, message);
       if (state.activeMessageId === id) {
         state.activeMessageId = null;
       }
@@ -159,7 +156,7 @@ export function reduceSessionEvent(state: SessionState, event: PiEvent): Session
         tool.status = "running";
         tool.input = toolInput(event);
       });
-      upsertMessageToolPart(state, event, { status: "running" });
+      updateExistingMessageToolPart(state, event, { status: "running" });
       break;
     case "tool_execution_update":
       updateTool(state, executionToolId(event), (tool) => {
@@ -168,14 +165,14 @@ export function reduceSessionEvent(state: SessionState, event: PiEvent): Session
           tool.log = [partial];
         }
       });
-      upsertMessageToolPart(state, event, { status: "running" });
+      updateExistingMessageToolPart(state, event, { status: "running" });
       break;
     case "tool_execution_end":
       updateTool(state, executionToolId(event), (tool) => {
         tool.status = isToolError(event) ? "failed" : "done";
         tool.output = event.output ?? event.result;
       });
-      upsertMessageToolPart(state, event, { status: isToolError(event) ? "error" : "done" });
+      updateExistingMessageToolPart(state, event, { status: isToolError(event) ? "error" : "done" });
       break;
     case "queue_update":
       state.queue = queueItems(event);
@@ -285,14 +282,18 @@ function hydrateConversationItem(state: SessionState, item: ConversationItem): v
     if (item.thinking && item.thinking.length > 0) {
       extracted.thinking = contentBlockListToText(item.thinking);
     }
-    state.messages.push({
+    const message: SessionMessage = {
       id: item.id,
       role: "assistant",
       content: extracted.content,
       thinking: extracted.thinking,
       tools: extracted.tools,
       status: "done",
-    });
+    };
+    for (const tool of item.tools ?? []) {
+      mergeToolPart(message, toolPartFromAssistantTool(tool));
+    }
+    state.messages.push(message);
   } else if (item.kind === "tool") {
     const lastAssistant = findLastAssistantInState(state);
     if (lastAssistant) {
@@ -497,7 +498,7 @@ function upsertExecutionTool(state: SessionState, event: PiEvent, update: (tool:
   update(tool);
 }
 
-function upsertMessageToolPart(
+function updateExistingMessageToolPart(
   state: SessionState,
   event: PiEvent,
   options: { status: MessageToolStatus }
@@ -506,90 +507,15 @@ function upsertMessageToolPart(
   if (!key) {
     return;
   }
-  const message = assistantMessageForToolPart(state, key);
+  const message = messageForExistingToolPart(state, key);
   if (!message) {
     return;
   }
   mergeToolPart(message, toolPartFromExecutionEvent(event, options.status, key));
 }
 
-function assistantMessageForToolPart(state: SessionState, key: string): SessionMessage | undefined {
-  const messageWithTool = messageForExistingToolPart(state, key);
-  if (messageWithTool) {
-    return messageWithTool;
-  }
-
-  const activeMessage = state.activeMessageId
-    ? state.messages.find((message) => message.id === state.activeMessageId && message.role === "assistant")
-    : undefined;
-  if (activeMessage) {
-    return activeMessage;
-  }
-
-  const pendingToolMessage = pendingToolLifecycleMessage(state);
-  if (pendingToolMessage) {
-    state.activeMessageId = pendingToolMessage.id;
-    return pendingToolMessage;
-  }
-
-  const message = upsertMessage(state, `${TOOL_LIFECYCLE_MESSAGE_PREFIX}${key}`, "assistant", "streaming");
-  state.activeMessageId = message.id;
-  return message;
-}
-
 function messageForExistingToolPart(state: Pick<SessionState, "messages">, key: string): SessionMessage | undefined {
   return state.messages.find((message) => message.tools.some((tool) => tool.key === key));
-}
-
-function pendingToolLifecycleMessage(state: Pick<SessionState, "messages">): SessionMessage | undefined {
-  const index = pendingToolLifecycleMessageIndex(state);
-  return index === -1 ? undefined : state.messages[index];
-}
-
-function pendingToolLifecycleMessageIndex(state: Pick<SessionState, "messages">): number {
-  for (let index = state.messages.length - 1; index >= 0; index -= 1) {
-    const message = state.messages[index];
-    if (
-      message.id.startsWith(TOOL_LIFECYCLE_MESSAGE_PREFIX) &&
-      message.role === "assistant" &&
-      message.status === "streaming" &&
-      !message.content &&
-      !message.thinking &&
-      message.tools.length > 0
-    ) {
-      return index;
-    }
-  }
-  return -1;
-}
-
-function mergePendingToolLifecycleMessage(state: SessionState, target: SessionMessage): void {
-  const pendingIndex = pendingToolLifecycleMessageIndex(state);
-  if (pendingIndex === -1) {
-    return;
-  }
-
-  const pending = state.messages[pendingIndex];
-  if (pending === target) {
-    return;
-  }
-
-  const matchingTools = pending.tools.filter((tool) => target.tools.some((targetTool) => targetTool.key === tool.key));
-  if (matchingTools.length === 0) {
-    return;
-  }
-
-  for (const tool of matchingTools) {
-    mergeToolPart(target, tool);
-  }
-
-  pending.tools = pending.tools.filter((tool) => !matchingTools.some((matchingTool) => matchingTool.key === tool.key));
-  if (pending.tools.length === 0) {
-    state.messages.splice(pendingIndex, 1);
-  }
-  if (state.activeMessageId === pending.id && pending.tools.length === 0) {
-    state.activeMessageId = target.id;
-  }
 }
 
 function mergeToolPart(message: Pick<SessionMessage, "tools">, incoming: MessageToolPart): void {
@@ -628,70 +554,7 @@ function mergeToolPart(message: Pick<SessionMessage, "tools">, incoming: Message
 }
 
 function existingToolPart(tools: MessageToolPart[], incoming: MessageToolPart): MessageToolPart | undefined {
-  const keyed = tools.find((tool) => incoming.key && tool.key === incoming.key);
-  if (keyed) {
-    return keyed;
-  }
-
-  // Look for a running tool with matching operation. This handles both:
-  // 1. Completed tool matching a running placeholder (terminal → running)
-  // 2. Running toolCall from message content matching a running tool from Pi adapter (running → running)
-  return tools.find((tool) => tool.status === "running" && sameToolOperation(tool, incoming));
-}
-
-function sameToolOperation(left: MessageToolPart, right: MessageToolPart): boolean {
-  const leftName = left.name && left.name !== "tool" ? left.name : left.label;
-  const rightName = right.name && right.name !== "tool" ? right.name : right.label;
-  if (leftName && rightName && leftName !== rightName) {
-    return false;
-  }
-
-  // Compare inputs first — they're the most reliable match signal.
-  const leftInput = stableToolInput(left.input ?? left.rawInput);
-  const rightInput = stableToolInput(right.input ?? right.rawInput);
-  if (leftInput && rightInput && leftInput === rightInput) {
-    return true;
-  }
-
-  // If both have non-empty inputs that differ, these are different operations.
-  if (leftInput && rightInput) {
-    return false;
-  }
-
-  // At least one input is empty. Fall back to detail matching.
-  // Allow partial matches: one detail may contain the other (e.g.
-  // Pi adapter adds a "bash: " prefix that the LLM toolCall doesn't have).
-  if (left.detail && right.detail) {
-    return left.detail === right.detail
-      || left.detail.includes(right.detail)
-      || right.detail.includes(left.detail);
-  }
-
-  // No conflicting inputs or details — treat as the same tool.
-  return true;
-}
-
-function stableToolInput(value: unknown): string {
-  if (value === undefined || value === null) {
-    return "";
-  }
-
-  try {
-    return JSON.stringify(value, sortedJsonReplacer);
-  } catch {
-    return "";
-  }
-}
-
-function sortedJsonReplacer(_key: string, value: unknown): unknown {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).sort(([left], [right]) =>
-        left.localeCompare(right),
-      ),
-    );
-  }
-  return value;
+  return tools.find((tool) => incoming.key && tool.key === incoming.key);
 }
 
 function isTerminalToolStatus(status: MessageToolStatus): boolean {
@@ -728,8 +591,8 @@ function toolPartFromToolCall(event: PiEvent): MessageToolPart {
     label: toolName(event) || "Tool call",
     name: toolName(event) || "tool",
     detail: toolDetail(event) || undefined,
-    status: "running",
-    statusLabel: toolStatusLabel("running"),
+    status: "pending",
+    statusLabel: toolStatusLabel("pending"),
     content: "",
     input: toolInput(event),
     rawInput: toolInput(event)
@@ -778,20 +641,19 @@ function mergedToolStatus(current: MessageToolStatus, incoming: MessageToolStatu
   if (incoming === "error" || current === "error") {
     return "error";
   }
-  if (incoming === "done") {
-    return "done";
-  }
-  if (current === "done") {
+  if (incoming === "done" || current === "done") {
     return "done";
   }
   if (incoming === "running" || current === "running") {
     return "running";
   }
-  return "running";
+  return "pending";
 }
 
 function toolStatusLabel(status: MessageToolStatus): string {
   switch (status) {
+    case "pending":
+      return "Pending";
     case "running":
       return "In progress";
     case "done":
@@ -1315,6 +1177,9 @@ export function reduceSessionViewPatch(
     case "updateItem":
       applyItemUpdate(state, patch.id, patch.partial);
       break;
+    case "upsertAssistantTool":
+      applyAssistantToolUpsert(state, patch.assistantId, patch.tool);
+      break;
     case "setStatus":
       state.statusText = patch.statusText ?? state.statusText;
       if (isFinishedRunStatus(patch.status)) {
@@ -1347,6 +1212,23 @@ export function reduceSessionViewPatch(
       break;
   }
   return state;
+}
+
+function applyAssistantToolUpsert(
+  state: SessionState,
+  assistantId: string,
+  tool: Partial<AssistantToolPart> & { id: string },
+): void {
+  const message = state.messages.find((item) => item.id === assistantId && item.role === "assistant");
+  if (!message) {
+    return;
+  }
+
+  const incoming = toolPartFromAssistantTool(tool);
+  mergeToolPart(message, incoming);
+  if (isTerminalToolStatus(incoming.status) && !message.content) {
+    message.status = "done";
+  }
 }
 
 /**
@@ -1432,6 +1314,16 @@ function applyAssistantUpdate(
     }
   }
 
+  if ("tools" in partial && Array.isArray(partial.tools)) {
+    for (const tool of partial.tools) {
+      const incoming = toolPartFromAssistantTool(tool);
+      mergeToolPart(message, incoming);
+      if (isTerminalToolStatus(incoming.status)) {
+        sawTerminalTool = true;
+      }
+    }
+  }
+
   if (sawTerminalTool && !message.content) {
     message.status = "done";
   }
@@ -1463,9 +1355,7 @@ function toolPartFromPatch(
     input?: unknown;
     detail?: string;
   };
-  const status: MessageToolStatus =
-    toolPartial.status === "error" ? "error" :
-    toolPartial.status === "done" ? "done" : "running";
+  const status = messageToolStatus(toolPartial.status);
 
   return {
     type: "tool",
@@ -1480,6 +1370,35 @@ function toolPartFromPatch(
     input: toolPartial.input,
     output: toolPartial.output,
   };
+}
+
+function toolPartFromAssistantTool(
+  tool: Partial<AssistantToolPart> & { id: string },
+): MessageToolPart {
+  const status = messageToolStatus(tool.status);
+  const content = tool.content ?? outputToString(tool.output);
+  return {
+    type: "tool",
+    key: tool.id,
+    id: tool.id,
+    label: tool.label || tool.name || "Tool call",
+    name: tool.name || "tool",
+    detail: tool.detail,
+    status,
+    statusLabel: toolStatusLabel(status),
+    content,
+    input: tool.input,
+    output: tool.output,
+    rawInput: tool.input,
+    rawOutput: tool.output,
+  };
+}
+
+function messageToolStatus(status: unknown): MessageToolStatus {
+  if (status === "error") return "error";
+  if (status === "done") return "done";
+  if (status === "running") return "running";
+  return "pending";
 }
 
 /** Find the message that owns a tool with the given key. */

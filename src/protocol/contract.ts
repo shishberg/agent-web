@@ -11,7 +11,7 @@ const RUN_STATUSES = new Set([
 ]);
 
 const ITEM_KINDS = new Set(["user", "assistant", "tool", "notice"]);
-const TOOL_STATUSES = new Set(["running", "done", "error"]);
+const TOOL_STATUSES = new Set(["pending", "running", "done", "error"]);
 const FORBIDDEN_PI_BLOCK_TYPES = new Set([
   "message",
   "session",
@@ -72,6 +72,13 @@ function assertValidConversationItem(item: unknown): asserts item is Conversatio
     throw new Error(`${item.kind} item must have a content array`);
   }
 
+  if (item.kind === "assistant" && item.tools !== undefined) {
+    if (!Array.isArray(item.tools)) throw new Error("assistant item tools must be an array");
+    for (const tool of item.tools) {
+      assertValidAssistantTool(tool);
+    }
+  }
+
   if (item.kind === "tool") {
     if (typeof item.toolName !== "string") throw new Error("Tool item toolName must be a string");
     if (typeof item.toolLabel !== "string") throw new Error("Tool item toolLabel must be a string");
@@ -83,6 +90,16 @@ function assertValidConversationItem(item: unknown): asserts item is Conversatio
   if (item.kind === "notice") {
     if (typeof item.text !== "string") throw new Error("Notice item text must be a string");
     if (typeof item.noticeType !== "string") throw new Error("Notice item noticeType must be a string");
+  }
+}
+
+function assertValidAssistantTool(tool: unknown): void {
+  if (!isRecord(tool)) throw new Error("assistant tool must be an object");
+  if (typeof tool.id !== "string" || tool.id.length === 0) throw new Error("assistant tool id must be truthy");
+  if (typeof tool.name !== "string") throw new Error("assistant tool name must be a string");
+  if (typeof tool.label !== "string") throw new Error("assistant tool label must be a string");
+  if (typeof tool.status !== "string" || !TOOL_STATUSES.has(tool.status)) {
+    throw new Error(`assistant tool must have a valid status, got ${String(tool.status)}`);
   }
 }
 
